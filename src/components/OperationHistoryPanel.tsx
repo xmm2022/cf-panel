@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -27,11 +27,7 @@ export default function OperationHistoryPanel({ userId }: OperationHistoryPanelP
   const [history, setHistory] = useState<OperationRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  useEffect(() => {
-    fetchHistory();
-  }, [userId]);
-
-  const fetchHistory = async () => {
+  const fetchHistory = useCallback(async () => {
     setIsLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke('operation-history', {
@@ -53,7 +49,11 @@ export default function OperationHistoryPanel({ userId }: OperationHistoryPanelP
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [userId]);
+
+  useEffect(() => {
+    void fetchHistory();
+  }, [fetchHistory]);
 
   const deleteRecord = async (recordId: string) => {
     try {

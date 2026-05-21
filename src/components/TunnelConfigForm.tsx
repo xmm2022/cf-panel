@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -44,6 +44,40 @@ export function TunnelConfigForm({
   const [isLoading, setIsLoading] = useState(false);
   const [token, setToken] = useState("");
 
+  const generateConfigTemplate = useCallback(() => {
+    return `# Cloudflare Tunnel 配置文件
+# Tunnel ID: ${tunnel.id}
+# Tunnel Name: ${tunnel.name}
+
+tunnel: ${tunnel.id}
+credentials-file: /root/.cloudflared/${tunnel.id}.json
+
+# 入站规则 - 配置你的服务
+ingress:
+  # 示例：将域名映射到本地服务
+  - hostname: example.com
+    service: http://localhost:8080
+  
+  # 示例：HTTPS服务
+  - hostname: secure.example.com
+    service: https://localhost:8443
+  
+  # 示例：SSH服务
+  - hostname: ssh.example.com
+    service: ssh://localhost:22
+  
+  # 捕获所有其他请求（必须）
+  - service: http_status:404
+
+# 可选：日志配置
+loglevel: info
+
+# 注意事项：
+# 1. 将 example.com 替换为你的实际域名
+# 2. credentials-file 路径需要包含有效的凭证文件
+# 3. 确保DNS记录指向此tunnel`;
+  }, [tunnel]);
+
   useEffect(() => {
     if (!open || !tunnel) return;
 
@@ -87,41 +121,7 @@ export function TunnelConfigForm({
         setIsLoading(false);
       }
     })();
-  }, [open, tunnel, accountId, email, apiKey, toast]);
-
-  const generateConfigTemplate = () => {
-    return `# Cloudflare Tunnel 配置文件
-# Tunnel ID: ${tunnel.id}
-# Tunnel Name: ${tunnel.name}
-
-tunnel: ${tunnel.id}
-credentials-file: /root/.cloudflared/${tunnel.id}.json
-
-# 入站规则 - 配置你的服务
-ingress:
-  # 示例：将域名映射到本地服务
-  - hostname: example.com
-    service: http://localhost:8080
-  
-  # 示例：HTTPS服务
-  - hostname: secure.example.com
-    service: https://localhost:8443
-  
-  # 示例：SSH服务
-  - hostname: ssh.example.com
-    service: ssh://localhost:22
-  
-  # 捕获所有其他请求（必须）
-  - service: http_status:404
-
-# 可选：日志配置
-loglevel: info
-
-# 注意事项：
-# 1. 将 example.com 替换为你的实际域名
-# 2. credentials-file 路径需要包含有效的凭证文件
-# 3. 确保DNS记录指向此tunnel`;
-  };
+  }, [open, tunnel, accountId, email, apiKey, toast, generateConfigTemplate]);
 
   const handleCopyToken = () => {
     navigator.clipboard.writeText(token);

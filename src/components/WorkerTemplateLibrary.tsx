@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -59,11 +59,7 @@ export default function WorkerTemplateLibrary({ userId, onUseTemplate }: WorkerT
     isPublic: false,
   });
 
-  useEffect(() => {
-    fetchTemplates();
-  }, [userId]);
-
-  const fetchTemplates = async () => {
+  const fetchTemplates = useCallback(async () => {
     setIsLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke('worker-templates', {
@@ -85,7 +81,11 @@ export default function WorkerTemplateLibrary({ userId, onUseTemplate }: WorkerT
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [userId]);
+
+  useEffect(() => {
+    void fetchTemplates();
+  }, [fetchTemplates]);
 
   const handleSubmit = async () => {
     if (!formData.name || !formData.scriptContent) {

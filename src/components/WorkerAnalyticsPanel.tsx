@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase-adapter';
@@ -54,7 +54,7 @@ export function WorkerAnalyticsPanel({ accountId, email, apiKey, scriptName }: W
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AnalyticsDataPoint[]>([]);
 
-  const fetchAnalytics = async () => {
+  const fetchAnalytics = useCallback(async () => {
     setLoading(true);
     try {
       const now = new Date();
@@ -113,11 +113,11 @@ export function WorkerAnalyticsPanel({ accountId, email, apiKey, scriptName }: W
     } finally {
       setLoading(false);
     }
-  };
+  }, [accountId, apiKey, email, scriptName]);
 
   useEffect(() => {
     void fetchAnalytics();
-  }, [accountId, apiKey, email, scriptName]);
+  }, [fetchAnalytics]);
 
   const totalRequests = data.reduce((sum, d) => sum + d.requests, 0);
   const totalErrors = data.reduce((sum, d) => sum + d.errors, 0);
