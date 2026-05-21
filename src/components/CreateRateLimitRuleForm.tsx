@@ -75,8 +75,8 @@ export default function CreateRateLimitRuleForm({
 
       toast.success('速率限制规则创建成功');
       onSuccess();
-    } catch (err: any) {
-      toast.error(err.message || '创建失败');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '创建失败');
     } finally {
       setLoading(false);
     }

@@ -11,10 +11,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 interface TunnelConfigFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  tunnel: any;
+  tunnel: TunnelInfo;
   accountId: string;
   email: string;
   apiKey: string;
+}
+
+interface TunnelInfo {
+  id: string;
+  name: string;
+  status?: string;
+}
+
+interface TunnelConfigResponse {
+  success: boolean;
+  config?: string;
+  token?: string;
+  error?: string;
+  errors?: Array<{ message: string }>;
 }
 
 export function TunnelConfigForm({
@@ -31,32 +45,27 @@ export function TunnelConfigForm({
   const [token, setToken] = useState("");
 
   useEffect(() => {
-    if (open && tunnel) {
-      loadTunnelConfig();
-    }
-  }, [open, tunnel]);
+    if (!open || !tunnel) return;
 
-  const loadTunnelConfig = async () => {
-    setIsLoading(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('cloudflare-api', {
-        body: {
-          action: 'get_tunnel_config',
-          email,
-          apiKey,
-          accountId,
-          tunnelId: tunnel.id,
-        }
-      });
+    void (async () => {
+      setIsLoading(true);
+      try {
+        const { data, error } = await supabase.functions.invoke<TunnelConfigResponse>('cloudflare-api', {
+          body: {
+            action: 'get_tunnel_config',
+            email,
+            apiKey,
+            accountId,
+            tunnelId: tunnel.id,
+          }
+        });
 
-      if (error) throw error;
+        if (error) throw error;
 
-      if (data.success) {
-        setConfig(data.config || "");
-        setToken(data.token || "");
-      } else {
-        // API不支持此操作，提供模板配置
-        if (data.error?.includes('未知操作')) {
+        if (data?.success) {
+          setConfig(data.config || "");
+          setToken(data.token || "");
+        } else if (data?.error?.includes('未知操作')) {
           setConfig(generateConfigTemplate());
           toast({
             title: "无法自动获取配置",
@@ -64,22 +73,21 @@ export function TunnelConfigForm({
             variant: "default",
           });
         } else {
-          throw new Error(data.errors?.[0]?.message || data.error || '加载配置失败');
+          throw new Error(data?.errors?.[0]?.message || data?.error || '加载配置失败');
         }
+      } catch (error) {
+        console.error('Load tunnel config error:', error);
+        setConfig(generateConfigTemplate());
+        toast({
+          title: "无法自动获取配置",
+          description: "已生成配置模板，请根据需要修改",
+          variant: "default",
+        });
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error: any) {
-      console.error('Load tunnel config error:', error);
-      // 如果API调用失败，提供模板
-      setConfig(generateConfigTemplate());
-      toast({
-        title: "无法自动获取配置",
-        description: "已生成配置模板，请根据需要修改",
-        variant: "default",
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    })();
+  }, [open, tunnel, accountId, email, apiKey, toast]);
 
   const generateConfigTemplate = () => {
     return `# Cloudflare Tunnel 配置文件

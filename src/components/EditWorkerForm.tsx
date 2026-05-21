@@ -24,67 +24,75 @@ interface EditWorkerFormProps {
   }>;
 }
 
+interface WorkerScriptResponse {
+  success: boolean;
+  result?: string;
+  errors?: Array<{ message: string }>;
+}
+
+interface UploadWorkerResponse {
+  success: boolean;
+  errors?: Array<{ message: string }>;
+}
+
 export function EditWorkerForm({ open, onOpenChange, workerId, workerName, accountId, email, apiKey, onSuccess, currentBindings }: EditWorkerFormProps) {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [isFetching, setIsFetching] = useState(true);
   const [workerScript, setWorkerScript] = useState("");
 
-  // 获取Worker脚本
   useEffect(() => {
-    if (open && workerId) {
-      fetchWorkerScript();
-    }
-  }, [open, workerId]);
+    if (!open || !workerId) return;
 
-  const fetchWorkerScript = async () => {
-    setIsFetching(true);
+    void (async () => {
+      setIsFetching(true);
 
-    console.log('Fetching worker script:', {
-      workerId,
-      accountId,
-      hasEmail: !!email,
-      hasApiKey: !!apiKey,
-      emailPrefix: email?.substring(0, 5),
-    });
-
-    if (!email || !apiKey) {
-      toast({
-        title: "认证错误",
-        description: "缺少 Cloudflare 凭证",
-        variant: "destructive",
-      });
-      setIsFetching(false);
-      return;
-    }
-
-    try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'get_worker_script',
-        email,
-        apiKey,
+      console.log('Fetching worker script:', {
+        workerId,
         accountId,
-        scriptName: workerId,
+        hasEmail: !!email,
+        hasApiKey: !!apiKey,
+        emailPrefix: email?.substring(0, 5),
       });
 
-      if (error) throw error;
-
-      if (data.success) {
-        setWorkerScript(data.result || "");
-      } else {
-        throw new Error(data.errors?.[0]?.message || "获取Worker脚本失败");
+      if (!email || !apiKey) {
+        toast({
+          title: "认证错误",
+          description: "缺少 Cloudflare 凭证",
+          variant: "destructive",
+        });
+        setIsFetching(false);
+        return;
       }
-    } catch (error: any) {
-      console.error('Fetch worker script error:', error);
-      toast({
-        title: "获取Worker脚本失败",
-        description: error.message,
-        variant: "destructive",
-      });
-    } finally {
-      setIsFetching(false);
-    }
-  };
+
+      try {
+        const { data, error } = await invokeWorkerApi<WorkerScriptResponse>('cloudflare-api', {
+          action: 'get_worker_script',
+          email,
+          apiKey,
+          accountId,
+          scriptName: workerId,
+        });
+
+        if (error) throw error;
+
+        if (data?.success) {
+          setWorkerScript(data.result || "");
+        } else {
+          throw new Error(data?.errors?.[0]?.message || "获取Worker脚本失败");
+        }
+      } catch (error) {
+        console.error('Fetch worker script error:', error);
+        toast({
+          title: "获取Worker脚本失败",
+          description: error instanceof Error ? error.message : "未知错误",
+          variant: "destructive",
+        });
+      } finally {
+        setIsFetching(false);
+      }
+    })();
+  }, [open, workerId, accountId, email, apiKey, toast]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,7 +117,7 @@ export function EditWorkerForm({ open, onOpenChange, workerId, workerName, accou
       
       console.log('Uploading worker with bindings:', bindingsToKeep);
 
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
+      const { data, error } = await invokeWorkerApi<UploadWorkerResponse>('cloudflare-api', {
         action: 'upload_worker',
         email,
         apiKey,
@@ -123,7 +131,7 @@ export function EditWorkerForm({ open, onOpenChange, workerId, workerName, accou
 
       if (error) throw error;
 
-      if (data.success) {
+      if (data?.success) {
         console.log('Worker uploaded successfully');
         
         toast({
@@ -134,13 +142,13 @@ export function EditWorkerForm({ open, onOpenChange, workerId, workerName, accou
         onSuccess();
         onOpenChange(false);
       } else {
-        throw new Error(data.errors?.[0]?.message || "更新Worker失败");
+        throw new Error(data?.errors?.[0]?.message || "更新Worker失败");
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Update worker error:', error);
       toast({
         title: "更新Worker失败",
-        description: error.message,
+        description: error instanceof Error ? error.message : "未知错误",
         variant: "destructive",
       });
     } finally {

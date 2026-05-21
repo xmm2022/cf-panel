@@ -18,6 +18,22 @@ interface AutoOptimizationPanelProps {
   apiKey: string;
 }
 
+interface ZoneSettingUpdateResult {
+  setting: string;
+  success: boolean;
+}
+
+interface ZoneSettingsUpdateResponse {
+  success?: boolean;
+  result?: ZoneSettingUpdateResult[];
+  errors?: Array<{ message: string }>;
+}
+
+interface ZoneSettingInput {
+  id: string;
+  value: unknown;
+}
+
 export default function AutoOptimizationPanel({ zoneId, userId, zoneName, email, apiKey }: AutoOptimizationPanelProps) {
   const [optimizationType, setOptimizationType] = useState<string>('');
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -106,7 +122,7 @@ export default function AutoOptimizationPanel({ zoneId, userId, zoneName, email,
         value: value
       }));
 
-      const { data, error } = await supabase.functions.invoke('cloudflare-api', {
+      const { data, error } = await supabase.functions.invoke<ZoneSettingsUpdateResponse>('cloudflare-api', {
         body: {
           action: 'update_zone_settings',
           email,
@@ -118,9 +134,9 @@ export default function AutoOptimizationPanel({ zoneId, userId, zoneName, email,
 
       if (error) throw error;
 
-      const successFlag = (data as any)?.success;
-      const result = (data as any)?.result as Array<{ setting: string; success: boolean }> | undefined;
-      const errors = (data as any)?.errors as Array<{ message: string }> | undefined;
+      const successFlag = data?.success;
+      const result = data?.result;
+      const errors = data?.errors;
 
       if (successFlag) {
         toast.success(`${optimizationType === 'security' ? '安全' : '速度'}优化配置已应用`);
@@ -182,7 +198,7 @@ export default function AutoOptimizationPanel({ zoneId, userId, zoneName, email,
   const applyAllSettings = async () => {
     setIsOptimizing(true);
     try {
-      const settingsToApply: any[] = [];
+      const settingsToApply: ZoneSettingInput[] = [];
 
       // 安全设置
       settingsToApply.push(
@@ -218,7 +234,7 @@ export default function AutoOptimizationPanel({ zoneId, userId, zoneName, email,
         { id: '0rtt', value: zeroRttEnabled ? 'on' : 'off' }
       );
 
-      const { data, error } = await supabase.functions.invoke('cloudflare-api', {
+      const { data, error } = await supabase.functions.invoke<ZoneSettingsUpdateResponse>('cloudflare-api', {
         body: {
           action: 'update_zone_settings',
           email,
@@ -229,9 +245,9 @@ export default function AutoOptimizationPanel({ zoneId, userId, zoneName, email,
       });
 
       if (error) throw error;
-      const successFlag = (data as any)?.success;
-      const result = (data as any)?.result as Array<{ setting: string; success: boolean }> | undefined;
-      const errors = (data as any)?.errors as Array<{ message: string }> | undefined;
+      const successFlag = data?.success;
+      const result = data?.result;
+      const errors = data?.errors;
 
       if (successFlag) {
         toast.success('所有设置已应用');

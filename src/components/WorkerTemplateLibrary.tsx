@@ -148,7 +148,7 @@ export default function WorkerTemplateLibrary({ userId, onUseTemplate }: WorkerT
     }
   };
 
-  const useTemplate = async (template: WorkerTemplate) => {
+  const applyTemplate = async (template: WorkerTemplate) => {
     try {
       // 先复制到剪贴板
       if (onUseTemplate) {
@@ -325,7 +325,7 @@ export default function WorkerTemplateLibrary({ userId, onUseTemplate }: WorkerT
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => useTemplate(template)}
+                        onClick={() => applyTemplate(template)}
                       >
                         <Copy className="w-4 h-4" />
                       </Button>

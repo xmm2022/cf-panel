@@ -18,6 +18,17 @@ interface CreateWorkerFormProps {
   onSuccess: () => void;
 }
 
+interface UploadWorkerResponse {
+  success: boolean;
+  errors?: Array<{ message: string }>;
+}
+
+interface WorkersSubdomainResponse {
+  result?: {
+    subdomain?: string;
+  };
+}
+
 const DEFAULT_WORKER_SCRIPT = `addEventListener('fetch', event => {
   event.respondWith(new Response('Hello World!'));
 });`;
@@ -63,7 +74,7 @@ export function CreateWorkerForm({ open, onOpenChange, accountId, email, apiKey,
 
     try {
       // 1️⃣ 创建 Worker
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
+      const { data, error } = await invokeWorkerApi<UploadWorkerResponse>('cloudflare-api', {
         action: 'upload_worker',
         email,
         apiKey,
@@ -76,11 +87,11 @@ export function CreateWorkerForm({ open, onOpenChange, accountId, email, apiKey,
 
       if (error) throw error;
 
-      if (data.success) {
+      if (data?.success) {
         // 2️⃣ 获取 workers.dev 子域名并构建访问链接
         let visitUrl: string | null = null;
         try {
-          const { data: subData } = await invokeWorkerApi('cloudflare-api', {
+          const { data: subData } = await invokeWorkerApi<WorkersSubdomainResponse>('cloudflare-api', {
             action: 'get_workers_subdomain',
             email,
             apiKey,
@@ -117,13 +128,13 @@ export function CreateWorkerForm({ open, onOpenChange, accountId, email, apiKey,
         onSuccess();
         onOpenChange(false);
       } else {
-        throw new Error(data.errors?.[0]?.message || "创建Worker失败");
+        throw new Error(data?.errors?.[0]?.message || "创建Worker失败");
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Create worker error:', error);
       toast({
         title: "创建Worker失败",
-        description: error.message,
+        description: error instanceof Error ? error.message : "未知错误",
         variant: "destructive",
       });
     } finally {

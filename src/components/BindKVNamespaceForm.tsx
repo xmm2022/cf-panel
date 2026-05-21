@@ -24,6 +24,17 @@ interface KVNamespace {
   title: string;
 }
 
+interface KVNamespaceListResponse {
+  success: boolean;
+  result?: KVNamespace[];
+  errors?: Array<{ message: string }>;
+}
+
+interface BindKVNamespaceResponse {
+  success: boolean;
+  errors?: Array<{ message: string }>;
+}
+
 export function BindKVNamespaceForm({ open, onOpenChange, workerId, workerName, accountId, email, apiKey, onSuccess }: BindKVNamespaceFormProps) {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
@@ -33,40 +44,38 @@ export function BindKVNamespaceForm({ open, onOpenChange, workerId, workerName, 
   const [bindingName, setBindingName] = useState("MY_KV");
 
   useEffect(() => {
-    if (open) {
-      fetchKVNamespaces();
-    }
-  }, [open]);
+    if (!open) return;
 
-  const fetchKVNamespaces = async () => {
-    setIsFetchingNamespaces(true);
+    void (async () => {
+      setIsFetchingNamespaces(true);
 
-    try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'list_kv_namespaces',
-        email,
-        apiKey,
-        accountId,
-      });
+      try {
+        const { data, error } = await invokeWorkerApi<KVNamespaceListResponse>("cloudflare-api", {
+          action: "list_kv_namespaces",
+          email,
+          apiKey,
+          accountId,
+        });
 
-      if (error) throw error;
+        if (error) throw error;
 
-      if (data.success) {
-        setNamespaces(data.result || []);
-      } else {
-        throw new Error(data.errors?.[0]?.message || "获取KV命名空间列表失败");
+        if (data?.success) {
+          setNamespaces(data.result || []);
+        } else {
+          throw new Error(data?.errors?.[0]?.message || "获取KV命名空间列表失败");
+        }
+      } catch (error) {
+        console.error("Fetch KV namespaces error:", error);
+        toast({
+          title: "获取KV命名空间列表失败",
+          description: error instanceof Error ? error.message : "未知错误",
+          variant: "destructive",
+        });
+      } finally {
+        setIsFetchingNamespaces(false);
       }
-    } catch (error: any) {
-      console.error('Fetch KV namespaces error:', error);
-      toast({
-        title: "获取KV命名空间列表失败",
-        description: error.message,
-        variant: "destructive",
-      });
-    } finally {
-      setIsFetchingNamespaces(false);
-    }
-  };
+    })();
+  }, [open, email, apiKey, accountId, toast]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,8 +101,8 @@ export function BindKVNamespaceForm({ open, onOpenChange, workerId, workerName, 
     setIsLoading(true);
 
     try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'bind_kv_to_worker',
+      const { data, error } = await invokeWorkerApi<BindKVNamespaceResponse>("cloudflare-api", {
+        action: "bind_kv_to_worker",
         email,
         apiKey,
         accountId,
@@ -106,7 +115,7 @@ export function BindKVNamespaceForm({ open, onOpenChange, workerId, workerName, 
 
       if (error) throw error;
 
-      if (data.success) {
+      if (data?.success) {
         toast({
           title: "成功",
           description: `KV 命名空间已绑定到 Worker "${workerName}"`,
@@ -114,13 +123,13 @@ export function BindKVNamespaceForm({ open, onOpenChange, workerId, workerName, 
         onSuccess();
         onOpenChange(false);
       } else {
-        throw new Error(data.errors?.[0]?.message || "绑定KV命名空间失败");
+        throw new Error(data?.errors?.[0]?.message || "绑定KV命名空间失败");
       }
-    } catch (error: any) {
-      console.error('Bind KV namespace error:', error);
+    } catch (error) {
+      console.error("Bind KV namespace error:", error);
       toast({
         title: "绑定KV命名空间失败",
-        description: error.message,
+        description: error instanceof Error ? error.message : "未知错误",
         variant: "destructive",
       });
     } finally {

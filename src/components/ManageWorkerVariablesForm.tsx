@@ -27,6 +27,24 @@ interface Variable {
   isExisting?: boolean; // 标记是否为已存在的变量（从服务器获取）
 }
 
+interface WorkerBinding {
+  type: string;
+  name: string;
+  text?: string;
+  json?: unknown;
+}
+
+interface WorkerSettingsResponse {
+  success: boolean;
+  result?: WorkerBinding[] | { bindings?: WorkerBinding[] };
+  errors?: Array<{ message: string }>;
+}
+
+interface UpdateWorkerVariablesResponse {
+  success: boolean;
+  errors?: Array<{ message: string }>;
+}
+
 export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, workerName, accountId, email, apiKey, onSuccess }: ManageWorkerVariablesFormProps) {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
@@ -34,57 +52,70 @@ export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, worker
   const [variables, setVariables] = useState<Variable[]>([]);
 
   useEffect(() => {
-    if (open) {
-      fetchVariables();
-    }
-  }, [open]);
+    if (!open) return;
 
-  const fetchVariables = async () => {
-    setIsFetching(true);
+    void (async () => {
+      setIsFetching(true);
 
-    try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'get_worker_settings',
-        email,
-        apiKey,
-        accountId,
-        scriptName: workerId,
-      });
+      try {
+        const { data, error } = await invokeWorkerApi<WorkerSettingsResponse>("cloudflare-api", {
+          action: "get_worker_settings",
+          email,
+          apiKey,
+          accountId,
+          scriptName: workerId,
+        });
 
-      if (error) throw error;
+        if (error) throw error;
 
-      if (data.success && data.result) {
-        // Cloudflare API 可能返回两种结构：
-        // 1. { result: { bindings: [...] } }
-        // 2. { result: [...] } (直接是 bindings 数组)
-        let bindings = [];
-        if (Array.isArray(data.result)) {
-          bindings = data.result;
-        } else if (data.result.bindings && Array.isArray(data.result.bindings)) {
-          bindings = data.result.bindings;
+        if (data?.success && data.result) {
+          const bindings = Array.isArray(data.result)
+            ? data.result
+            : Array.isArray(data.result.bindings)
+              ? data.result.bindings
+              : [];
+
+          const plainVars = bindings.filter((binding) => binding.type === "plain_text");
+          const secretVars = bindings.filter((binding) => binding.type === "secret_text");
+          const jsonVars = bindings.filter((binding) => binding.type === "json");
+          console.log("Fetched environment variables:", {
+            plain: plainVars,
+            secret: secretVars.map((secret) => secret.name),
+            json: jsonVars,
+          });
+          setVariables([
+            ...plainVars.map((variable): Variable => ({
+              name: variable.name,
+              value: variable.text || "",
+              type: "plain_text",
+              isExisting: true,
+            })),
+            ...secretVars.map((variable): Variable => ({
+              name: variable.name,
+              value: "",
+              type: "secret_text",
+              isExisting: true,
+            })),
+            ...jsonVars.map((variable): Variable => ({
+              name: variable.name,
+              value: variable.json ? JSON.stringify(variable.json, null, 2) : "",
+              type: "json",
+              isExisting: true,
+            })),
+          ]);
         }
-        
-        const plainVars = bindings.filter((b: any) => b.type === 'plain_text');
-        const secretVars = bindings.filter((b: any) => b.type === 'secret_text');
-        const jsonVars = bindings.filter((b: any) => b.type === 'json');
-        console.log('Fetched environment variables:', { plain: plainVars, secret: secretVars.map((s:any)=>s.name), json: jsonVars });
-        setVariables([
-          ...plainVars.map((v: any): Variable => ({ name: v.name, value: v.text || '', type: 'plain_text', isExisting: true })),
-          ...secretVars.map((v: any): Variable => ({ name: v.name, value: '', type: 'secret_text', isExisting: true })),
-          ...jsonVars.map((v: any): Variable => ({ name: v.name, value: v.json ? JSON.stringify(v.json, null, 2) : '', type: 'json', isExisting: true })),
-        ]);
+      } catch (error) {
+        console.error("Fetch variables error:", error);
+        toast({
+          title: "获取环境变量失败",
+          description: error instanceof Error ? error.message : "未知错误",
+          variant: "destructive",
+        });
+      } finally {
+        setIsFetching(false);
       }
-    } catch (error: any) {
-      console.error('Fetch variables error:', error);
-      toast({
-        title: "获取环境变量失败",
-        description: error.message,
-        variant: "destructive",
-      });
-    } finally {
-      setIsFetching(false);
-    }
-  };
+    })();
+  }, [open, email, apiKey, accountId, workerId, toast]);
 
   const addVariable = () => {
     setVariables([...variables, { name: '', value: '', type: 'plain_text', isExisting: false }]);
@@ -139,8 +170,8 @@ export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, worker
     setIsLoading(true);
 
     try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'update_worker_variables',
+      const { data, error } = await invokeWorkerApi<UpdateWorkerVariablesResponse>("cloudflare-api", {
+        action: "update_worker_variables",
         email,
         apiKey,
         accountId,
@@ -166,7 +197,7 @@ export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, worker
 
       if (error) throw error;
 
-      if (data.success) {
+      if (data?.success) {
         toast({
           title: "成功",
           description: `Worker "${workerName}" 的环境变量已更新`,
@@ -174,13 +205,13 @@ export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, worker
         onSuccess();
         onOpenChange(false);
       } else {
-        throw new Error(data.errors?.[0]?.message || "更新环境变量失败");
+        throw new Error(data?.errors?.[0]?.message || "更新环境变量失败");
       }
-    } catch (error: any) {
-      console.error('Update variables error:', error);
+    } catch (error) {
+      console.error("Update variables error:", error);
       toast({
         title: "更新环境变量失败",
-        description: error.message,
+        description: error instanceof Error ? error.message : "未知错误",
         variant: "destructive",
       });
     } finally {
@@ -231,7 +262,7 @@ export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, worker
                         <Label className="text-xs text-muted-foreground mb-1">类型</Label>
                         <Select
                           value={variable.type}
-                          onValueChange={(value: any) => updateVariableType(index, value)}
+                          onValueChange={(value: Variable["type"]) => updateVariableType(index, value)}
                           disabled={isLoading}
                         >
                           <SelectTrigger className="bg-background">

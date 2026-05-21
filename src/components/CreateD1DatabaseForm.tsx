@@ -29,6 +29,26 @@ interface CreateD1DatabaseFormProps {
   onSuccess: () => void;
 }
 
+interface CreateD1DatabaseRequest {
+  action: "create_d1_database";
+  email: string;
+  apiKey: string;
+  accountId: string;
+  name: string;
+  primary_location_hint?: string;
+  jurisdiction?: string;
+}
+
+interface CloudflareApiError {
+  message: string;
+}
+
+interface CreateD1DatabaseResponse {
+  success?: boolean;
+  error?: string;
+  errors?: CloudflareApiError[];
+}
+
 export function CreateD1DatabaseForm({
   open,
   onOpenChange,
@@ -59,7 +79,7 @@ export function CreateD1DatabaseForm({
 
     setIsLoading(true);
     try {
-      const baseBody: any = {
+      const baseBody: CreateD1DatabaseRequest = {
         action: "create_d1_database",
         email,
         apiKey,
@@ -76,10 +96,10 @@ export function CreateD1DatabaseForm({
       ];
 
       let lastErrorMsg: string | undefined;
-      let lastData: any;
+      let lastData: CreateD1DatabaseResponse | null = null;
 
       for (const s of strategies) {
-        const body = { ...baseBody } as any;
+        const body: CreateD1DatabaseRequest = { ...baseBody };
         if (s.includeHint) {
           body.primary_location_hint = s.hint;
         }
@@ -88,9 +108,9 @@ export function CreateD1DatabaseForm({
         }
 
         console.log("=== D1 Create Attempt ===", s.label, body);
-        const wf = await invokeWorkerApi<any>("cloudflare-api", body);
-        const data: any = wf.data;
-        const error: any = wf.error;
+        const wf = await invokeWorkerApi<CreateD1DatabaseResponse>("cloudflare-api", body);
+        const data = wf.data;
+        const error = wf.error;
         console.log("Attempt Response:", { error, data });
 
         if (error) {

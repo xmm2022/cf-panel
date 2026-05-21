@@ -26,6 +26,17 @@ interface D1Database {
   created_at: string;
 }
 
+interface D1DatabaseListResponse {
+  success: boolean;
+  result?: D1Database[];
+  errors?: Array<{ message: string }>;
+}
+
+interface BindD1Response {
+  success: boolean;
+  errors?: Array<{ message: string }>;
+}
+
 export function BindD1DatabaseForm({ open, onOpenChange, workerId, workerName, accountId, email, apiKey, onSuccess }: BindD1DatabaseFormProps) {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
@@ -34,42 +45,39 @@ export function BindD1DatabaseForm({ open, onOpenChange, workerId, workerName, a
   const [selectedDatabase, setSelectedDatabase] = useState("");
   const [bindingName, setBindingName] = useState("DB");
 
-  // 获取D1数据库列表
   useEffect(() => {
-    if (open) {
-      fetchD1Databases();
-    }
-  }, [open]);
+    if (!open) return;
 
-  const fetchD1Databases = async () => {
-    setIsFetchingDatabases(true);
+    void (async () => {
+      setIsFetchingDatabases(true);
 
-    try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'list_d1_databases',
-        email,
-        apiKey,
-        accountId,
-      });
+      try {
+        const { data, error } = await invokeWorkerApi<D1DatabaseListResponse>("cloudflare-api", {
+          action: "list_d1_databases",
+          email,
+          apiKey,
+          accountId,
+        });
 
-      if (error) throw error;
+        if (error) throw error;
 
-      if (data.success) {
-        setDatabases(data.result || []);
-      } else {
-        throw new Error(data.errors?.[0]?.message || "获取D1数据库列表失败");
+        if (data?.success) {
+          setDatabases(data.result || []);
+        } else {
+          throw new Error(data?.errors?.[0]?.message || "获取D1数据库列表失败");
+        }
+      } catch (error) {
+        console.error("Fetch D1 databases error:", error);
+        toast({
+          title: "获取D1数据库列表失败",
+          description: error instanceof Error ? error.message : "未知错误",
+          variant: "destructive",
+        });
+      } finally {
+        setIsFetchingDatabases(false);
       }
-    } catch (error: any) {
-      console.error('Fetch D1 databases error:', error);
-      toast({
-        title: "获取D1数据库列表失败",
-        description: error.message,
-        variant: "destructive",
-      });
-    } finally {
-      setIsFetchingDatabases(false);
-    }
-  };
+    })();
+  }, [open, email, apiKey, accountId, toast]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -95,8 +103,8 @@ export function BindD1DatabaseForm({ open, onOpenChange, workerId, workerName, a
     setIsLoading(true);
 
     try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'bind_d1_to_worker',
+      const { data, error } = await invokeWorkerApi<BindD1Response>("cloudflare-api", {
+        action: "bind_d1_to_worker",
         email,
         apiKey,
         accountId,
@@ -109,7 +117,7 @@ export function BindD1DatabaseForm({ open, onOpenChange, workerId, workerName, a
 
       if (error) throw error;
 
-      if (data.success) {
+      if (data?.success) {
         toast({
           title: "成功",
           description: `D1 数据库已绑定到 Worker "${workerName}"`,
@@ -117,13 +125,13 @@ export function BindD1DatabaseForm({ open, onOpenChange, workerId, workerName, a
         onSuccess();
         onOpenChange(false);
       } else {
-        throw new Error(data.errors?.[0]?.message || "绑定D1数据库失败");
+        throw new Error(data?.errors?.[0]?.message || "绑定D1数据库失败");
       }
-    } catch (error: any) {
-      console.error('Bind D1 database error:', error);
+    } catch (error) {
+      console.error("Bind D1 database error:", error);
       toast({
         title: "绑定D1数据库失败",
-        description: error.message,
+        description: error instanceof Error ? error.message : "未知错误",
         variant: "destructive",
       });
     } finally {

@@ -11,11 +11,16 @@ import { Textarea } from "@/components/ui/textarea";
 interface TunnelRouteFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  tunnel: any;
+  tunnel: TunnelInfo | null;
   accountId: string;
   email: string;
   apiKey: string;
   onSuccess: () => void;
+}
+
+interface TunnelInfo {
+  id: string;
+  name: string;
 }
 
 export function TunnelRouteForm({

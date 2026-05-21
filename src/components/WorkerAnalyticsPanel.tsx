@@ -22,6 +22,34 @@ interface AnalyticsDataPoint {
   cpuTimeP99?: number;
 }
 
+interface WorkerInvocationPoint {
+  dimensions?: {
+    date?: string;
+    datetime?: string;
+  };
+  sum?: {
+    requests?: number;
+    errors?: number;
+    subrequests?: number;
+  };
+  quantiles?: {
+    cpuTimeP50?: number;
+    cpuTimeP99?: number;
+  };
+}
+
+interface WorkerAnalyticsResponse {
+  success: boolean;
+  errors?: Array<{ message: string }>;
+  result?: {
+    viewer?: {
+      accounts?: Array<{
+        workersInvocationsAdaptive?: WorkerInvocationPoint[];
+      }>;
+    };
+  };
+}
+
 export function WorkerAnalyticsPanel({ accountId, email, apiKey, scriptName }: WorkerAnalyticsPanelProps) {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AnalyticsDataPoint[]>([]);
@@ -34,7 +62,7 @@ export function WorkerAnalyticsPanel({ accountId, email, apiKey, scriptName }: W
       const tomorrow = new Date(today);
       tomorrow.setDate(tomorrow.getDate() + 1);
 
-      const { data: result, error } = await supabase.functions.invoke('cf-worker-analytics', {
+      const { data: result, error } = await supabase.functions.invoke<WorkerAnalyticsResponse>('cf-worker-analytics', {
         body: { 
           email, 
           apiKey, 
@@ -54,7 +82,7 @@ export function WorkerAnalyticsPanel({ accountId, email, apiKey, scriptName }: W
       const invocations = result.result?.viewer?.accounts?.[0]?.workersInvocationsAdaptive || [];
       
       // 按日期聚合数据
-      const dailyData = invocations.reduce((acc: Record<string, AnalyticsDataPoint>, item: any) => {
+      const dailyData = invocations.reduce((acc: Record<string, AnalyticsDataPoint>, item) => {
         const date = item.dimensions?.date || item.dimensions?.datetime?.split('T')[0] || '';
         if (!acc[date]) {
           acc[date] = {
@@ -88,8 +116,8 @@ export function WorkerAnalyticsPanel({ accountId, email, apiKey, scriptName }: W
   };
 
   useEffect(() => {
-    fetchAnalytics();
-  }, []);
+    void fetchAnalytics();
+  }, [accountId, apiKey, email, scriptName]);
 
   const totalRequests = data.reduce((sum, d) => sum + d.requests, 0);
   const totalErrors = data.reduce((sum, d) => sum + d.errors, 0);

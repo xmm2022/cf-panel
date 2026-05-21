@@ -24,6 +24,19 @@ interface R2Bucket {
   creation_date: string;
 }
 
+interface R2BucketListResponse {
+  success: boolean;
+  result?: {
+    buckets?: R2Bucket[];
+  };
+  errors?: Array<{ message: string }>;
+}
+
+interface BindR2BucketResponse {
+  success: boolean;
+  errors?: Array<{ message: string }>;
+}
+
 export function BindR2BucketForm({ open, onOpenChange, workerId, workerName, accountId, email, apiKey, onSuccess }: BindR2BucketFormProps) {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
@@ -33,40 +46,38 @@ export function BindR2BucketForm({ open, onOpenChange, workerId, workerName, acc
   const [bindingName, setBindingName] = useState("MY_BUCKET");
 
   useEffect(() => {
-    if (open) {
-      fetchR2Buckets();
-    }
-  }, [open]);
+    if (!open) return;
 
-  const fetchR2Buckets = async () => {
-    setIsFetchingBuckets(true);
+    void (async () => {
+      setIsFetchingBuckets(true);
 
-    try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'list_r2_buckets',
-        email,
-        apiKey,
-        accountId,
-      });
+      try {
+        const { data, error } = await invokeWorkerApi<R2BucketListResponse>("cloudflare-api", {
+          action: "list_r2_buckets",
+          email,
+          apiKey,
+          accountId,
+        });
 
-      if (error) throw error;
+        if (error) throw error;
 
-      if (data.success) {
-        setBuckets(data.result?.buckets || []);
-      } else {
-        throw new Error(data.errors?.[0]?.message || "获取R2存储桶列表失败");
+        if (data?.success) {
+          setBuckets(data.result?.buckets || []);
+        } else {
+          throw new Error(data?.errors?.[0]?.message || "获取R2存储桶列表失败");
+        }
+      } catch (error) {
+        console.error("Fetch R2 buckets error:", error);
+        toast({
+          title: "获取R2存储桶列表失败",
+          description: error instanceof Error ? error.message : "未知错误",
+          variant: "destructive",
+        });
+      } finally {
+        setIsFetchingBuckets(false);
       }
-    } catch (error: any) {
-      console.error('Fetch R2 buckets error:', error);
-      toast({
-        title: "获取R2存储桶列表失败",
-        description: error.message,
-        variant: "destructive",
-      });
-    } finally {
-      setIsFetchingBuckets(false);
-    }
-  };
+    })();
+  }, [open, email, apiKey, accountId, toast]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,8 +103,8 @@ export function BindR2BucketForm({ open, onOpenChange, workerId, workerName, acc
     setIsLoading(true);
 
     try {
-      const { data, error } = await invokeWorkerApi('cloudflare-api', {
-        action: 'bind_r2_to_worker',
+      const { data, error } = await invokeWorkerApi<BindR2BucketResponse>("cloudflare-api", {
+        action: "bind_r2_to_worker",
         email,
         apiKey,
         accountId,
@@ -106,7 +117,7 @@ export function BindR2BucketForm({ open, onOpenChange, workerId, workerName, acc
 
       if (error) throw error;
 
-      if (data.success) {
+      if (data?.success) {
         toast({
           title: "成功",
           description: `R2 存储桶已绑定到 Worker "${workerName}"`,
@@ -114,13 +125,13 @@ export function BindR2BucketForm({ open, onOpenChange, workerId, workerName, acc
         onSuccess();
         onOpenChange(false);
       } else {
-        throw new Error(data.errors?.[0]?.message || "绑定R2存储桶失败");
+        throw new Error(data?.errors?.[0]?.message || "绑定R2存储桶失败");
       }
-    } catch (error: any) {
-      console.error('Bind R2 bucket error:', error);
+    } catch (error) {
+      console.error("Bind R2 bucket error:", error);
       toast({
         title: "绑定R2存储桶失败",
-        description: error.message,
+        description: error instanceof Error ? error.message : "未知错误",
         variant: "destructive",
       });
     } finally {
