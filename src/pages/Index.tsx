@@ -161,6 +161,202 @@ interface WorkerDetail extends Worker {
   }>;
 }
 
+interface WorkerBinding {
+  type: string;
+  name: string;
+  id?: string;
+  namespace_id?: string;
+  database_id?: string;
+  realName?: string;
+}
+
+interface D1DatabaseSummary {
+  uuid: string;
+  name: string;
+  version?: string;
+  created_at: string;
+}
+
+interface R2BucketSummary {
+  name: string;
+  creation_date: string;
+  location?: string;
+}
+
+interface TunnelConnection {
+  id?: string;
+  colo_name?: string;
+  client_ip?: string;
+}
+
+interface TunnelSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  status?: string;
+  deleted_at?: string | null;
+  connections?: TunnelConnection[];
+}
+
+interface CertificateSummary {
+  id: string;
+  hosts?: string[];
+  expires_on: string;
+  status: string;
+}
+
+interface KVNamespaceSummary {
+  id: string;
+  title: string;
+}
+
+interface KVKeySummary {
+  name: string;
+}
+
+interface PagesDomain {
+  name: string;
+}
+
+interface PagesProjectSourceConfig {
+  owner?: string;
+  repo_name?: string;
+}
+
+interface PagesProjectSource {
+  type?: string;
+  config?: PagesProjectSourceConfig;
+}
+
+interface PagesStage {
+  name?: string;
+  status?: string;
+}
+
+interface PagesProductionDeployment {
+  environment?: string;
+  url?: string;
+  latest_stage?: PagesStage;
+  created_on?: string;
+}
+
+interface PagesProjectSummary {
+  id?: string;
+  name: string;
+  subdomain?: string;
+  created_on: string;
+  production_deployment?: PagesProductionDeployment;
+  domains?: Array<string | PagesDomain>;
+  source?: PagesProjectSource;
+}
+
+interface PagesDeploymentBuildConfig {
+  build_command?: string;
+}
+
+interface PagesDeploymentTriggerMetadata {
+  commit_message?: string;
+  branch?: string;
+}
+
+interface PagesDeploymentTrigger {
+  metadata?: PagesDeploymentTriggerMetadata;
+}
+
+interface PagesDeploymentSummary {
+  id: string;
+  environment?: string;
+  latest_stage?: PagesStage;
+  url?: string;
+  created_on?: string;
+  build_config?: PagesDeploymentBuildConfig;
+  deployment_trigger?: PagesDeploymentTrigger;
+}
+
+interface AnalyticsGroup {
+  dimensions: {
+    date: string;
+    [key: string]: string | undefined;
+  };
+  sum?: {
+    requests?: number;
+    bytes?: number;
+    threats?: number;
+    cachedRequests?: number;
+    cachedBytes?: number;
+    encryptedRequests?: number;
+    encryptedBytes?: number;
+    pageViews?: number;
+  };
+  uniq?: {
+    uniques?: number;
+  };
+}
+
+interface ZoneAnalytics {
+  httpRequests1dGroups?: AnalyticsGroup[];
+  deviceTypeGroups?: AnalyticsGroup[];
+}
+
+interface AnalyticsData {
+  viewer?: {
+    zones?: ZoneAnalytics[];
+  };
+}
+
+interface ZoneSetting {
+  id: string;
+  value: string | number | { strict_transport_security?: { enabled?: boolean } };
+}
+
+interface R2ObjectSummary {
+  key: string;
+  size?: number;
+  uploaded?: string;
+}
+
+interface D1QueryResult {
+  results?: Array<Record<string, unknown>>;
+  result?: Array<Record<string, unknown>>;
+  meta?: {
+    duration?: number;
+    changes?: number;
+  };
+}
+
+interface FirewallRuleFilter {
+  id?: string;
+}
+
+interface FirewallRule {
+  id: string;
+  paused?: boolean;
+  filter?: FirewallRuleFilter;
+}
+
+interface RateLimitRule {
+  id: string;
+}
+
+interface PageRuleAction {
+  id: string;
+  value?: string | number | { status_code: number; url: string };
+}
+
+interface PageRuleTarget {
+  constraint?: {
+    value?: string;
+  };
+}
+
+interface PageRule {
+  id: string;
+  status: "active" | "disabled";
+  priority?: number;
+  targets?: PageRuleTarget[];
+  actions?: PageRuleAction[];
+}
+
 const Index = () => {
   const { toast } = useToast();
 
@@ -186,8 +382,8 @@ const Index = () => {
   });
   const [selectedWorker, setSelectedWorker] = useState<string>("");
   const [workerDetail, setWorkerDetail] = useState<WorkerDetail | null>(null);
-  const [workerBindings, setWorkerBindings] = useState<any[]>([]);
-  const [allWorkerBindings, setAllWorkerBindings] = useState<Record<string, any[]>>({});
+  const [workerBindings, setWorkerBindings] = useState<WorkerBinding[]>([]);
+  const [allWorkerBindings, setAllWorkerBindings] = useState<Record<string, WorkerBinding[]>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [activeView, setActiveView] = useState<
     | "deploy"
@@ -212,13 +408,13 @@ const Index = () => {
     | "pages"
   >("zones");
   const [dnsNavClicks, setDnsNavClicks] = useState(0);
-  const [d1Databases, setD1Databases] = useState<any[]>([]);
-  const [r2Buckets, setR2Buckets] = useState<any[]>([]);
-  const [tunnels, setTunnels] = useState<any[]>([]);
-  const [certificates, setCertificates] = useState<any[]>([]);
-  const [kvNamespaces, setKvNamespaces] = useState<any[]>([]);
+  const [d1Databases, setD1Databases] = useState<D1DatabaseSummary[]>([]);
+  const [r2Buckets, setR2Buckets] = useState<R2BucketSummary[]>([]);
+  const [tunnels, setTunnels] = useState<TunnelSummary[]>([]);
+  const [certificates, setCertificates] = useState<CertificateSummary[]>([]);
+  const [kvNamespaces, setKvNamespaces] = useState<KVNamespaceSummary[]>([]);
   const [selectedKvNamespace, setSelectedKvNamespace] = useState<string>("");
-  const [kvKeys, setKvKeys] = useState<any[]>([]);
+  const [kvKeys, setKvKeys] = useState<KVKeySummary[]>([]);
   const [selectedKvKeys, setSelectedKvKeys] = useState<string[]>([]);
   const [logoClicks, setLogoClicks] = useState(0);
   // 从 D1 数据库读取 Workers 隐藏开关
@@ -238,11 +434,11 @@ const Index = () => {
   const [workerPermanentlyVisible, setWorkerPermanentlyVisible] = useState(false);
   const [r2Error, setR2Error] = useState<string | null>(null);
   // Pages 管理
-  const [pagesProjects, setPagesProjects] = useState<any[]>([]);
+  const [pagesProjects, setPagesProjects] = useState<PagesProjectSummary[]>([]);
   const [selectedPagesProject, setSelectedPagesProject] = useState<string>("");
-  const [pagesDeployments, setPagesDeployments] = useState<any[]>([]);
+  const [pagesDeployments, setPagesDeployments] = useState<PagesDeploymentSummary[]>([]);
   const [isLoadingPages, setIsLoadingPages] = useState(false);
-  const [pagesProjectDetail, setPagesProjectDetail] = useState<any>(null);
+  const [pagesProjectDetail, setPagesProjectDetail] = useState<PagesProjectSummary | null>(null);
   const [showPagesDeployments, setShowPagesDeployments] = useState(false);
   // 新建 Pages 项目对话框
   const [createPagesProjectOpen, setCreatePagesProjectOpen] = useState(false);
@@ -274,22 +470,22 @@ const Index = () => {
   const [editTunnelOpen, setEditTunnelOpen] = useState(false);
   const [tunnelConfigOpen, setTunnelConfigOpen] = useState(false);
   const [tunnelRouteOpen, setTunnelRouteOpen] = useState(false);
-  const [selectedTunnel, setSelectedTunnel] = useState<any>(null);
+  const [selectedTunnel, setSelectedTunnel] = useState<TunnelSummary | null>(null);
   // D1 SQL 控制台
   const [selectedD1Database, setSelectedD1Database] = useState<string>("");
   const [d1SqlQuery, setD1SqlQuery] = useState<string>("");
-  const [d1QueryResult, setD1QueryResult] = useState<any>(null);
+  const [d1QueryResult, setD1QueryResult] = useState<D1QueryResult | null>(null);
   const [isExecutingD1Query, setIsExecutingD1Query] = useState(false);
   const [d1QueryHistory, setD1QueryHistory] = useState<string[]>([]);
   const [d1HistoryIndex, setD1HistoryIndex] = useState<number>(-1);
   // R2 文件管理
   const [selectedR2Bucket, setSelectedR2Bucket] = useState<string>("");
-  const [r2Files, setR2Files] = useState<any[]>([]);
+  const [r2Files, setR2Files] = useState<R2ObjectSummary[]>([]);
   const [isLoadingR2Files, setIsLoadingR2Files] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [showR2S3Config, setShowR2S3Config] = useState(false);
   const [editingRecord, setEditingRecord] = useState<DNSRecord | null>(null);
-  const [analyticsData, setAnalyticsData] = useState<any>(null);
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   // 创建 D1 数据库对话框
   const [showCreateD1DatabaseForm, setShowCreateD1DatabaseForm] = useState(false);
   const [analyticsPeriod, setAnalyticsPeriod] = useState<"24h" | "7d" | "30d">("7d");
@@ -305,12 +501,12 @@ const Index = () => {
   const [alwaysOnline, setAlwaysOnline] = useState<boolean>(false);
   const [purgeUrl, setPurgeUrl] = useState<string>("");
   const [purgeType, setPurgeType] = useState<"url" | "host" | "tag" | "prefix">("url");
-  const [firewallRules, setFirewallRules] = useState<any[]>([]);
+  const [firewallRules, setFirewallRules] = useState<FirewallRule[]>([]);
   const [firewallRulesetId, setFirewallRulesetId] = useState<string>("");
-  const [rateLimitRules, setRateLimitRules] = useState<any[]>([]);
+  const [rateLimitRules, setRateLimitRules] = useState<RateLimitRule[]>([]);
   const [rateLimitRulesetId, setRateLimitRulesetId] = useState<string>("");
   const [showCreateRateLimitForm, setShowCreateRateLimitForm] = useState(false);
-  const [pageRules, setPageRules] = useState<any[]>([]);
+  const [pageRules, setPageRules] = useState<PageRule[]>([]);
 
   // 页面规则表单状态
   const [editingPageRuleId, setEditingPageRuleId] = useState<string | null>(null);
@@ -346,7 +542,7 @@ const Index = () => {
     value: "",
   });
   const [showExpressionExamples, setShowExpressionExamples] = useState(false);
-  const [editingFirewallRule, setEditingFirewallRule] = useState<any>(null);
+  const [editingFirewallRule, setEditingFirewallRule] = useState<FirewallRule | null>(null);
 
   // 首次进入页面规则视图时加载规则列表
   useEffect(() => {
@@ -619,7 +815,7 @@ const Index = () => {
     }
 
     // 构建 actions 数组
-    const actions: any[] = [];
+    const actions: PageRuleAction[] = [];
 
     // 检查是否有互斥的设置
     const hasForwarding = newPageRule.forwardingType && newPageRule.forwardingUrl.trim();
@@ -674,7 +870,7 @@ const Index = () => {
           let hostname = "";
 
           // 移除协议前缀
-          let cleanUrl = urlPattern.replace(/^https?:\/\//, "");
+          const cleanUrl = urlPattern.replace(/^https?:\/\//, "");
 
           // 提取域名部分（移除路径）
           const pathIndex = cleanUrl.indexOf("/");
@@ -770,7 +966,7 @@ const Index = () => {
         await loadPageRules();
       } else {
         const errorMessages =
-          data.messages?.map((m: any) => m.message).join("\n") || data.errors?.[0]?.message || "未知错误";
+          data.messages?.map((m: { message: string }) => m.message).join("\n") || data.errors?.[0]?.message || "未知错误";
         toast({
           title: editingPageRuleId ? "更新失败" : "创建失败",
           description: errorMessages,
@@ -996,7 +1192,7 @@ const Index = () => {
 
       if (data.success) {
         // 过滤掉已删除的 tunnel（deleted_at 不为 null）
-        const activeTunnels = (data.result || []).filter((tunnel: any) => !tunnel.deleted_at);
+        const activeTunnels = (data.result || []).filter((tunnel: TunnelSummary) => !tunnel.deleted_at);
         setTunnels(activeTunnels);
       } else {
         toast({
@@ -1272,12 +1468,16 @@ const Index = () => {
     // 清除当前账号标记
     try {
       localStorage.removeItem("cf_current_account_id");
-    } catch {}
+    } catch {
+      // Ignore storage cleanup errors.
+    }
     // 清除可能遗留的旧会话存储
     try {
       sessionStorage.removeItem("cf_email");
       sessionStorage.removeItem("cf_api_key");
-    } catch {}
+    } catch {
+      // Ignore storage cleanup errors.
+    }
     resetAllState();
     setCfEmail("");
     setCfApiKey("");
@@ -1468,55 +1668,55 @@ const Index = () => {
 
       if (data.success && data.result) {
         // 查找 SSL 设置
-        const sslSetting = data.result.find((setting: any) => setting.id === "ssl");
+        const sslSetting = data.result.find((setting: ZoneSetting) => setting.id === "ssl");
         if (sslSetting) {
           setSslMode(sslSetting.value);
         }
 
         // 查找 Always Use HTTPS 设置
-        const alwaysHttpsSetting = data.result.find((setting: any) => setting.id === "always_use_https");
+        const alwaysHttpsSetting = data.result.find((setting: ZoneSetting) => setting.id === "always_use_https");
         if (alwaysHttpsSetting) {
           setAlwaysUseHttps(alwaysHttpsSetting.value === "on");
         }
 
         // 查找 Automatic HTTPS Rewrites 设置
-        const autoHttpsSetting = data.result.find((setting: any) => setting.id === "automatic_https_rewrites");
+        const autoHttpsSetting = data.result.find((setting: ZoneSetting) => setting.id === "automatic_https_rewrites");
         if (autoHttpsSetting) {
           setAutomaticHttpsRewrites(autoHttpsSetting.value === "on");
         }
 
         // 查找 HSTS 设置
-        const hstsSetting = data.result.find((setting: any) => setting.id === "security_header");
+        const hstsSetting = data.result.find((setting: ZoneSetting) => setting.id === "security_header");
         if (hstsSetting && hstsSetting.value?.strict_transport_security) {
           setHstsEnabled(hstsSetting.value.strict_transport_security.enabled === true);
         }
 
         // 查找随机加密设置
-        const oppEncSetting = data.result.find((setting: any) => setting.id === "opportunistic_encryption");
+        const oppEncSetting = data.result.find((setting: ZoneSetting) => setting.id === "opportunistic_encryption");
         if (oppEncSetting) {
           setOpportunisticEncryption(oppEncSetting.value === "on");
         }
 
         // 查找 TLS 1.3 设置
-        const tls13Setting = data.result.find((setting: any) => setting.id === "tls_1_3");
+        const tls13Setting = data.result.find((setting: ZoneSetting) => setting.id === "tls_1_3");
         if (tls13Setting) {
           setTls13(tls13Setting.value === "on");
         }
 
         // 查找缓存级别设置
-        const cacheLevelSetting = data.result.find((setting: any) => setting.id === "cache_level");
+        const cacheLevelSetting = data.result.find((setting: ZoneSetting) => setting.id === "cache_level");
         if (cacheLevelSetting) {
           setCacheLevel(cacheLevelSetting.value);
         }
 
         // 查找浏览器缓存 TTL 设置
-        const browserCacheSetting = data.result.find((setting: any) => setting.id === "browser_cache_ttl");
+        const browserCacheSetting = data.result.find((setting: ZoneSetting) => setting.id === "browser_cache_ttl");
         if (browserCacheSetting) {
           setBrowserCacheTtl(browserCacheSetting.value);
         }
 
         // 查找 Always Online 设置
-        const alwaysOnlineSetting = data.result.find((setting: any) => setting.id === "always_online");
+        const alwaysOnlineSetting = data.result.find((setting: ZoneSetting) => setting.id === "always_online");
         if (alwaysOnlineSetting) {
           setAlwaysOnline(alwaysOnlineSetting.value === "on");
         }
@@ -2069,12 +2269,12 @@ const Index = () => {
 
     setIsLoading(true);
     try {
-      let purgeData: any = {};
+      let purgeData: Record<string, string[]> = {};
       const inputValue = purgeUrl.trim();
 
       // 根据类型构建不同的 purgeData
       switch (purgeType) {
-        case "url":
+        case "url": {
           // 如果用户没有输入协议，自动添加 https://
           const urlValue =
             inputValue.startsWith("http://") || inputValue.startsWith("https://")
@@ -2082,13 +2282,14 @@ const Index = () => {
               : `https://${inputValue}`;
           purgeData = { files: [urlValue] };
           break;
+        }
         case "host":
           purgeData = { hosts: [inputValue] };
           break;
         case "tag":
           purgeData = { tags: [inputValue] };
           break;
-        case "prefix":
+        case "prefix": {
           // 如果用户没有输入协议，自动添加 https://
           const prefixValue =
             inputValue.startsWith("http://") || inputValue.startsWith("https://")
@@ -2096,6 +2297,7 @@ const Index = () => {
               : `https://${inputValue}`;
           purgeData = { prefixes: [prefixValue] };
           break;
+        }
       }
 
       const { data, error } = await supabase.functions.invoke("cloudflare-api", {
@@ -2223,18 +2425,18 @@ const Index = () => {
           const kvMap: Record<string, string> = {};
 
           if (!d1Response.error && d1Response.data.success) {
-            (d1Response.data.result || []).forEach((db: any) => {
+            (d1Response.data.result || []).forEach((db: D1DatabaseSummary) => {
               d1Map[db.uuid] = db.name;
             });
           }
 
           if (!kvResponse.error && kvResponse.data.success) {
-            (kvResponse.data.result || []).forEach((ns: any) => {
+            (kvResponse.data.result || []).forEach((ns: KVNamespaceSummary) => {
               kvMap[ns.id] = ns.title;
             });
           }
 
-          const bindingsMap: Record<string, any[]> = {};
+          const bindingsMap: Record<string, WorkerBinding[]> = {};
           await Promise.all(
             workersList.map(async (worker: Worker) => {
               try {
@@ -2255,7 +2457,7 @@ const Index = () => {
                     : bindingsData.result?.bindings || [];
 
                   // 增强bindings，添加真实的数据库/命名空间名称
-                  bindings = bindings.map((binding: any) => {
+                  bindings = bindings.map((binding: WorkerBinding) => {
                     if (binding.type === "d1" && binding.database_id) {
                       return { ...binding, realName: d1Map[binding.database_id] || binding.name };
                     } else if (binding.type === "kv_namespace" && binding.namespace_id) {
@@ -2428,7 +2630,7 @@ const Index = () => {
     }
   };
 
-  const updateZoneSetting = async (settingId: string, value: any) => {
+  const updateZoneSetting = async (settingId: string, value: unknown) => {
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     if (!email || !apiKey || !selectedZone) return;
