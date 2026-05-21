@@ -1,75 +1,36 @@
-// Cloudflare Worker - 完整后端代码（签名 + 域名双保险安全版本）
-// 替代 Lovable Cloud/Supabase 的所有功能
+// Cloudflare Worker API for the CF Panel frontend.
+// Optional environment variable:
+// - ALLOWED_ORIGINS: comma-separated origins allowed to call this Worker.
 
-// ==================== 安全配置 ====================
-// 1️⃣ 域名白名单（只允许这些域名发起请求）
-const ALLOWED_ORIGINS = [
-  'https://xmm2022.github.io',
-  'http://localhost:5173',  // 本地开发
-  'http://localhost:8788',  // 本地 Worker 测试
-];
-
-// 2️⃣ 签名密钥（请在 Cloudflare Dashboard 设置环境变量 AUTH_SECRET）
-// 生产环境使用：wrangler secret put AUTH_SECRET
-// 本地测试使用：在 .dev.vars 文件中设置 AUTH_SECRET=你的密钥
-const DEFAULT_AUTH_SECRET = '6093b631eb06ee06bc31352bfeb16747a363c2d5738501b9393f27aa4f65ba82';
-
-// ==================== 安全验证函数 ====================
-function verifyOrigin(request) {
-  const origin = request.headers.get('Origin');
-  const referer = request.headers.get('Referer');
-  
-  // 检查 Origin
-  if (origin) {
-    const isAllowed = ALLOWED_ORIGINS.some(allowed => origin === allowed);
-    if (isAllowed) return { valid: true, origin };
-  }
-  
-  // 回退检查 Referer
-  if (referer) {
-    const isAllowed = ALLOWED_ORIGINS.some(allowed => referer.startsWith(allowed));
-    if (isAllowed) return { valid: true, origin: referer };
-  }
-  
-  return { valid: false, origin: origin || referer };
+function parseAllowedOrigins(env) {
+  const raw = typeof env.ALLOWED_ORIGINS === 'string' ? env.ALLOWED_ORIGINS : '';
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 }
 
-async function verifySignature(request, env) {
-  const authHeader = request.headers.get('X-Auth-Signature');
-  if (!authHeader) {
-    return { valid: false, error: 'Missing X-Auth-Signature header' };
+function buildCorsHeaders(request, env) {
+  const allowedOrigins = parseAllowedOrigins(env);
+  const requestOrigin = request.headers.get('Origin');
+  const allowAllOrigins = allowedOrigins.length === 0;
+  const matchedOrigin = requestOrigin && allowedOrigins.includes(requestOrigin) ? requestOrigin : null;
+  const allowOrigin = allowAllOrigins ? '*' : matchedOrigin;
+
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': allowOrigin || 'null',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, accept',
+  };
+
+  if (!allowAllOrigins && matchedOrigin) {
+    corsHeaders.Vary = 'Origin';
   }
-  
-  const secret = env.AUTH_SECRET || DEFAULT_AUTH_SECRET;
-  
-  // 简单的 HMAC-SHA256 验证
-  // 客户端发送格式: timestamp.signature
-  const [timestamp, signature] = authHeader.split('.');
-  if (!timestamp || !signature) {
-    return { valid: false, error: 'Invalid signature format' };
-  }
-  
-  // 验证时间戳（5分钟内有效，防止重放攻击）
-  const now = Date.now();
-  const requestTime = parseInt(timestamp, 10);
-  if (Math.abs(now - requestTime) > 300000) { // 5分钟 = 300000ms
-    return { valid: false, error: 'Signature expired' };
-  }
-  
-  // 生成预期的签名
-  const message = timestamp + secret;
-  const encoder = new TextEncoder();
-  const data = encoder.encode(message);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const expectedSignature = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  
-  // 比较签名
-  if (signature !== expectedSignature) {
-    return { valid: false, error: 'Invalid signature' };
-  }
-  
-  return { valid: true };
+
+  return {
+    corsHeaders,
+    originAllowed: allowAllOrigins || !!matchedOrigin || !requestOrigin,
+  };
 }
 
 // ==================== 主处理函数 ====================
@@ -77,50 +38,22 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
-
-    // 🔒 安全检查 1：验证域名来源
-    const originCheck = verifyOrigin(request);
-    const allowedOrigin = originCheck.valid ? originCheck.origin : null;
-    
-    // CORS 头设置
-    const corsHeaders = allowedOrigin ? {
-      'Access-Control-Allow-Origin': allowedOrigin,
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, accept, x-auth-signature',
-      'Access-Control-Allow-Credentials': 'true',
-    } : {
-      'Access-Control-Allow-Origin': 'null',
-    };
+    const { corsHeaders, originAllowed } = buildCorsHeaders(request, env);
 
     // 处理 OPTIONS 预检请求
     if (request.method === 'OPTIONS') {
       return new Response(null, { 
-        status: allowedOrigin ? 204 : 403,
+        status: originAllowed ? 204 : 403,
         headers: corsHeaders 
       });
     }
 
-    // 🔒 安全检查 2：域名白名单验证
-    if (!originCheck.valid) {
-      console.error('Origin blocked:', originCheck.origin);
+    if (!originAllowed) {
       return new Response(JSON.stringify({ 
-        error: '🚫 Access denied: Unauthorized origin',
-        origin: originCheck.origin 
+        error: 'Unauthorized origin',
+        origin: request.headers.get('Origin') || request.headers.get('Referer') || null,
       }), {
         status: 403,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-
-    // 🔒 安全检查 3：签名验证
-    const signatureCheck = await verifySignature(request, env);
-    if (!signatureCheck.valid) {
-      console.error('Signature verification failed:', signatureCheck.error);
-      return new Response(JSON.stringify({ 
-        error: '🚫 Access denied: ' + signatureCheck.error,
-        hint: 'Please ensure you have the correct authentication signature'
-      }), {
-        status: 401,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
@@ -2077,7 +2010,7 @@ async function handleDeployWorker(request, env, corsHeaders) {
         {
           type: 'CNAME',
           name: subdomain,
-          content: optimizedDomain || 'cdns.doon.eu.org',
+          content: optimizedDomain || targetDomain.replace(/^https?:\/\//, ''),
           ttl: 1,
           proxied: false
         }

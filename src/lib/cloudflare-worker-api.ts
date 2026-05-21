@@ -1,32 +1,37 @@
-// Cloudflare Worker API 调用封装（带签名验证）
-import { addAuthSignature } from './auth-signature';
+// Cloudflare Worker API 调用封装
+// 默认使用 VITE_WORKER_API_URL；未设置时回退到当前站点同源地址。
 
-const WORKER_API_URL = 'https://cf-panel.xmm2266.workers.dev';
-
-interface ApiResponse<T = any> {
+interface ApiResponse<T = unknown> {
   data: T | null;
   error: Error | null;
 }
 
-/**
- * 调用 Cloudflare Worker API（自动添加签名）
- * @param endpoint API 端点 (e.g., 'cloudflare-api', 'verify-cloudflare')
- * @param body 请求体
- * @returns API 响应
- */
-export async function invokeWorkerApi<T = any>(
+function resolveWorkerApiBaseUrl(): string {
+  const configuredUrl = import.meta.env.VITE_WORKER_API_URL?.trim();
+
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, "");
+  }
+
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin.replace(/\/+$/, "");
+  }
+
+  throw new Error(
+    "Missing Worker API base URL. Set VITE_WORKER_API_URL or run the frontend behind the same origin as the Worker."
+  );
+}
+
+export async function invokeWorkerApi<T = unknown>(
   endpoint: string,
-  body: Record<string, any>
+  body: Record<string, unknown>
 ): Promise<ApiResponse<T>> {
   try {
-    // 🔒 自动添加签名头
-    const headers = await addAuthSignature({
-      'Content-Type': 'application/json',
-    });
-    
-    const response = await fetch(`${WORKER_API_URL}/api/${endpoint}`, {
-      method: 'POST',
-      headers,
+    const response = await fetch(`${resolveWorkerApiBaseUrl()}/api/${endpoint}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(body),
     });
 
@@ -35,12 +40,8 @@ export async function invokeWorkerApi<T = any>(
       throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
     }
 
-    const data = await response.json();
-    
-    // 直接返回 Worker 的响应，让前端自己检查 success 字段
-    // 这样保持与 Supabase functions.invoke 的行为一致
     return {
-      data: data,
+      data: await response.json(),
       error: null,
     };
   } catch (error) {

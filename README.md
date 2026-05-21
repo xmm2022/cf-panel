@@ -1,73 +1,124 @@
-# Welcome to your Lovable project
+# CF Panel
 
-## Project info
+`CF Panel` 是一个面向自部署场景的 Cloudflare 管理面板。
 
-**URL**: https://lovable.dev/projects/7b941f26-c682-4bd3-8047-b4310d09cd93
+它的部署模型很简单：
 
-## How can I edit this code?
+- 前端：`Vite + React`，构建后输出静态文件
+- 后端：`Cloudflare Worker`
+- 存储：`Cloudflare D1`
 
-There are several ways of editing your application.
+这个仓库已经清理掉了原先的私有部署残留，包括：
 
-**Use Lovable**
+- 写死的第三方 Worker URL
+- Lovable / Supabase 项目绑定
+- 仓库内明文 `.env`
+- 私有作者联系方式、授权码入口和品牌文案
+- 私有默认优选域名和数据库种子数据
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/7b941f26-c682-4bd3-8047-b4310d09cd93) and start prompting.
+## 功能范围
 
-Changes made via Lovable will be committed automatically to this repo.
+- Zone / DNS / Worker / Route / Tunnel / Pages / D1 / KV / R2 管理
+- 操作历史
+- Worker 模板库
+- 反馈系统
+- D1 SQL 查询
+- Worker Analytics
 
-**Use your preferred IDE**
+## 部署架构
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+前端大部分功能通过 Worker API 调用 Cloudflare 官方 API；D1 负责存储面板内部数据。
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+注意：
 
-Follow these steps:
+- 目前有少量高级操作仍然会由浏览器直接请求 `api.cloudflare.com`，使用的是用户自己输入的 Cloudflare 凭据。
+- 这不会把请求转发到原作者服务器，但意味着浏览器端仍然会直接持有并使用这些凭据。
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+## 本地开发
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+1. 安装依赖
 
-# Step 3: Install the necessary dependencies.
-npm i
+```bash
+npm install
+```
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+2. 准备前端环境变量
+
+```bash
+cp .env.example .env.local
+```
+
+`.env.local` 常用项：
+
+```env
+VITE_WORKER_API_URL=http://127.0.0.1:8787
+VITE_BASE_PATH=/
+VITE_ADMIN_EMAILS=
+```
+
+3. 准备 Worker 本地变量
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+`.dev.vars` 目前只需要可选的跨域白名单：
+
+```env
+ALLOWED_ORIGINS=http://localhost:8080
+```
+
+4. 启动前端
+
+```bash
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+5. 另开一个终端启动 Worker
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+```bash
+npm run worker:dev
+```
 
-**Use GitHub Codespaces**
+## 生产部署
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+完整步骤见 [docs/deployment.md](docs/deployment.md)。
 
-## What technologies are used for this project?
+常见组合：
 
-This project is built with:
+- `GitHub Pages + Cloudflare Worker + D1`
+- `Cloudflare Pages + Cloudflare Worker + D1`
+- `任意静态托管 + Cloudflare Worker + D1`
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+仓库内已经附带 GitHub Pages 工作流：
 
-## How can I deploy this project?
+- [.github/workflows/github-pages.yml](/tmp/cf-panel-clean/.github/workflows/github-pages.yml:1)
 
-Simply open [Lovable](https://lovable.dev/projects/7b941f26-c682-4bd3-8047-b4310d09cd93) and click on Share -> Publish.
+## 环境变量
 
-## Can I connect a custom domain to my Lovable project?
+前端：
 
-Yes, you can!
+- `VITE_WORKER_API_URL`
+  前端调用的 Worker 根地址，例如 `https://your-worker.your-subdomain.workers.dev`
+- `VITE_BASE_PATH`
+  静态站点部署子路径。GitHub Pages 仓库页通常设置为 `/<repo-name>/`
+- `VITE_ADMIN_EMAILS`
+  可选，逗号分隔。用于开启反馈管理和 Workers 隐藏开关等管理员 UI
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+Worker：
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+- `ALLOWED_ORIGINS`
+  可选，逗号分隔。为空时允许任意来源；设置后仅允许指定来源访问 Worker API
+
+## 仓库清理说明
+
+为了让这个仓库适合公开发布，建议不要提交以下文件：
+
+- `.env.local`
+- `.dev.vars`
+- `.wrangler/`
+- 任何包含真实 Cloudflare / Supabase / GitHub Pages 资源 ID 的配置
+
+## License
+
+本仓库当前使用 `MIT` 许可证，见 [LICENSE](/tmp/cf-panel-clean/LICENSE:1)。

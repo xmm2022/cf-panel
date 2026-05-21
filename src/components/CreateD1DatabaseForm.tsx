@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
-import { supabase } from "@/integrations/supabase/client";
 
 interface CreateD1DatabaseFormProps {
   open: boolean;
@@ -89,22 +88,9 @@ export function CreateD1DatabaseForm({
         }
 
         console.log("=== D1 Create Attempt ===", s.label, body);
-        let data: any;
-        let error: any;
-        try {
-          const resp = await supabase.functions.invoke('cf-d1-admin', { body });
-          data = resp.data;
-          error = resp.error;
-          if (error || data == null) {
-            const wf = await invokeWorkerApi<any>('cloudflare-api', body);
-            data = wf.data;
-            error = wf.error;
-          }
-        } catch (e) {
-          const wf = await invokeWorkerApi<any>('cloudflare-api', body);
-          data = wf.data;
-          error = wf.error || (e instanceof Error ? e : new Error(String(e)));
-        }
+        const wf = await invokeWorkerApi<any>("cloudflare-api", body);
+        const data: any = wf.data;
+        const error: any = wf.error;
         console.log("Attempt Response:", { error, data });
 
         if (error) {

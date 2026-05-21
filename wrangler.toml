@@ -1,14 +1,11 @@
-# Wrangler 配置文件
 name = "cf-panel"
 main = "cloudflare-worker-complete.js"
 compatibility_date = "2024-01-01"
 
-# D1 数据库绑定
 [[d1_databases]]
 binding = "DB"
 database_name = "cf-panel-db"
-database_id = "2e4eb4d5-195b-4d86-8429-c33e80d9eef4"
+database_id = "YOUR_D1_DATABASE_ID"
 
-# 定时任务 - 每5分钟执行一次服务器检查
 [triggers]
 crons = ["*/5 * * * *"]

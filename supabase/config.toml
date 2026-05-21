@@ -1,4 +1,0 @@
-project_id = "uopmtoummvrgadbesbdn"
-
-[functions.cf-d1-admin]
-verify_jwt = false

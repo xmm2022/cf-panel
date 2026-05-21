@@ -222,11 +222,14 @@ const Index = () => {
   const [selectedKvKeys, setSelectedKvKeys] = useState<string[]>([]);
   const [logoClicks, setLogoClicks] = useState(0);
   // 从 D1 数据库读取 Workers 隐藏开关
-  const [workersHiddenByDefault, setWorkersHiddenByDefault] = useState<boolean>(true);
+  const [workersHiddenByDefault, setWorkersHiddenByDefault] = useState<boolean>(false);
   const [isLoadingWorkersSetting, setIsLoadingWorkersSetting] = useState(false);
 
-  // 检查是否是管理员
-  const isAdmin = cfEmail === "ceocok@163.com" || cfEmail === "ceocok@gmail.com";
+  const adminEmails = (import.meta.env.VITE_ADMIN_EMAILS || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+  const isAdmin = adminEmails.includes(cfEmail.trim().toLowerCase());
   const [showWorkers, setShowWorkers] = useState(() => {
     // 如果设置为不隐藏，则默认显示
     return !workersHiddenByDefault;
@@ -1302,7 +1305,7 @@ const Index = () => {
       console.log("Delete zone response:", data);
 
       if (error) {
-        console.error("Supabase invoke error:", error);
+        console.error("Worker invoke error:", error);
         throw error;
       }
 
@@ -2567,7 +2570,7 @@ const Index = () => {
         throw new Error("无法获取账户信息");
       }
 
-      // 2. 将 worker 名称转换回域名格式 (例如 "ip-feria-eu-org" -> "ip.feria.eu.org")
+      // 2. 将 worker 名称转换回域名格式
       const domainName = workerToDelete.id.replace(/-/g, ".");
 
       // 3. 找到匹配的 zone

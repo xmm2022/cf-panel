@@ -30,7 +30,7 @@ export const DeploymentForm = ({ cfEmail, cfApiKey }: DeploymentFormProps) => {
   const [formData, setFormData] = useState<FormData>({
     targetDomain: "",
     accessDomain: "",
-    optimizedDomain: "cdns.doon.eu.org",
+    optimizedDomain: "",
     cacheTtl: "0",
   });
 
@@ -194,17 +194,16 @@ export const DeploymentForm = ({ cfEmail, cfApiKey }: DeploymentFormProps) => {
             </div>
             <div>
               <Label htmlFor="optimizedDomain" className="text-sm">优选域名</Label>
-              <select
+              <Input
                 id="optimizedDomain"
+                type="text"
                 value={formData.optimizedDomain}
                 onChange={(e) => updateFormData("optimizedDomain", e.target.value)}
-                className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <option value="cdns.doon.eu.org">cdns.doon.eu.org</option>
-                <option value="cloudflare.182682.xyz">cloudflare.182682.xyz</option>
-              </select>
+                placeholder="可选：填写你自己的优选域名或 CDN 回源地址"
+                className="mt-1 h-9 text-sm"
+              />
               <p className="text-[11px] text-muted-foreground mt-1">
-                选择优选域名或保持默认
+                留空时将直接使用目标域名作为回源地址
               </p>
             </div>
             <Button
@@ -321,7 +320,7 @@ export const DeploymentForm = ({ cfEmail, cfApiKey }: DeploymentFormProps) => {
               setFormData({
                 targetDomain: "",
                 accessDomain: "",
-                optimizedDomain: "cdns.doon.eu.org",
+                optimizedDomain: "",
                 cacheTtl: "0",
               });
             }}
