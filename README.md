@@ -84,6 +84,11 @@ npm run worker:dev
 
 完整步骤见 [docs/deployment.md](docs/deployment.md)。
 
+发布辅助文档：
+
+- [RELEASE_NOTES.md](RELEASE_NOTES.md)
+- [docs/public-release-checklist.md](docs/public-release-checklist.md)
+
 常见组合：
 
 - `GitHub Pages + Cloudflare Worker + D1`
