@@ -60,4 +60,21 @@ describe("AnalyticsView", () => {
     await user.click(screen.getByRole("button", { name: "24小时" }));
     expect(onPeriodChange).toHaveBeenCalledWith("24h");
   });
+
+  it("keeps explanatory blocks visible without analytics data", () => {
+    render(
+      <AnalyticsView
+        analyticsData={null}
+        analyticsPeriod="7d"
+        isLoading={false}
+        selectedZoneName="example.com"
+        onBack={vi.fn()}
+        onRefresh={vi.fn()}
+        onPeriodChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("DNS 查询分析")).toBeInTheDocument();
+    expect(screen.getByText("防火墙事件与性能提示")).toBeInTheDocument();
+  });
 });

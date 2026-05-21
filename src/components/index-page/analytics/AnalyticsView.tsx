@@ -138,79 +138,75 @@ export function AnalyticsView({
             )}
 
             {!!groups.length && (
-              <>
-                <div className="p-4 border border-border/50 rounded-lg">
-                  <h3 className="font-medium mb-4">每日流量统计</h3>
-                  <div className="space-y-2">
-                    {groups.map((day) => (
-                      <div
-                        key={day.dimensions.date}
-                        className="flex items-center justify-between py-2 border-b border-border/30 last:border-0"
-                      >
-                        <span className="text-sm font-medium">{day.dimensions.date}</span>
-                        <div className="flex gap-4 text-sm flex-wrap">
-                          <span className="text-muted-foreground">
-                            请求:{" "}
-                            <span className="font-medium text-foreground">
-                              {formatMetricNumber(day.sum?.requests ?? 0)}
-                            </span>
+              <div className="p-4 border border-border/50 rounded-lg">
+                <h3 className="font-medium mb-4">每日流量统计</h3>
+                <div className="space-y-2">
+                  {groups.map((day) => (
+                    <div
+                      key={day.dimensions.date}
+                      className="flex items-center justify-between py-2 border-b border-border/30 last:border-0"
+                    >
+                      <span className="text-sm font-medium">{day.dimensions.date}</span>
+                      <div className="flex gap-4 text-sm flex-wrap">
+                        <span className="text-muted-foreground">
+                          请求:{" "}
+                          <span className="font-medium text-foreground">
+                            {formatMetricNumber(day.sum?.requests ?? 0)}
                           </span>
-                          <span className="text-muted-foreground">
-                            带宽:{" "}
-                            <span className="font-medium text-foreground">
-                              {((day.sum?.bytes ?? 0) / 1024 / 1024).toFixed(2)} MB
-                            </span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          带宽:{" "}
+                          <span className="font-medium text-foreground">
+                            {((day.sum?.bytes ?? 0) / 1024 / 1024).toFixed(2)} MB
                           </span>
-                          <span className="text-muted-foreground">
-                            访客:{" "}
-                            <span className="font-medium text-foreground">
-                              {day.uniq?.uniques ?? 0}
-                            </span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          访客:{" "}
+                          <span className="font-medium text-foreground">{day.uniq?.uniques ?? 0}</span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          缓存:{" "}
+                          <span className="font-medium text-green-600">
+                            {formatPercent(day.sum?.cachedRequests ?? 0, day.sum?.requests ?? 0, 0)}
                           </span>
-                          <span className="text-muted-foreground">
-                            缓存:{" "}
-                            <span className="font-medium text-green-600">
-                              {formatPercent(day.sum?.cachedRequests ?? 0, day.sum?.requests ?? 0, 0)}
-                            </span>
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 border border-border/50 rounded-lg">
-                    <h3 className="font-medium mb-4 flex items-center gap-2">
-                      <Network className="w-4 h-4" />
-                      DNS 查询分析
-                    </h3>
-                    <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                      <p className="text-sm text-muted-foreground flex items-center gap-2">
-                        <Info className="w-4 h-4 text-yellow-600" />
-                        注意：DNS、防火墙和性能附加指标保持现有模拟展示，真实接入仍沿用当前 API 能力边界。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="p-4 border border-border/50 rounded-lg">
-                    <h3 className="font-medium mb-4 flex items-center gap-2">
-                      <Shield className="w-4 h-4" />
-                      防火墙事件与性能提示
-                    </h3>
-                    <div className="space-y-3 text-sm text-muted-foreground">
-                      <div className="flex items-center gap-2">
-                        <Gauge className="w-4 h-4" />
-                        保留现有模拟数据块，但把计算和说明文字留在组件内部。
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <HardDrive className="w-4 h-4" />
-                        后续真实数据接入直接在 analytics 模块内扩展。
+                        </span>
                       </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
-              </>
+              </div>
             )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 border border-border/50 rounded-lg">
+                <h3 className="font-medium mb-4 flex items-center gap-2">
+                  <Network className="w-4 h-4" />
+                  DNS 查询分析
+                </h3>
+                <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                  <p className="text-sm text-muted-foreground flex items-center gap-2">
+                    <Info className="w-4 h-4 text-yellow-600" />
+                    注意：DNS、防火墙和性能附加指标保持现有模拟展示，真实接入仍沿用当前 API 能力边界。
+                  </p>
+                </div>
+              </div>
+              <div className="p-4 border border-border/50 rounded-lg">
+                <h3 className="font-medium mb-4 flex items-center gap-2">
+                  <Shield className="w-4 h-4" />
+                  防火墙事件与性能提示
+                </h3>
+                <div className="space-y-3 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <Gauge className="w-4 h-4" />
+                    保留现有模拟数据块，但把计算和说明文字留在组件内部。
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-4 h-4" />
+                    后续真实数据接入直接在 analytics 模块内扩展。
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>

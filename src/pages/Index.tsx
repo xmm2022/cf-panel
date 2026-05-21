@@ -531,6 +531,8 @@ const Index = () => {
     if (activeView === "analytics" && selectedZone) {
       loadAnalytics(selectedZone);
     }
+    // loader callback stabilization is deferred to Task 8
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedZone]);
 
   // 首次进入 Pages 视图时加载项目列表
