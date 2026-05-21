@@ -1,7 +1,7 @@
 // Cloudflare Worker API 调用封装（带签名验证）
 import { addAuthSignature } from './auth-signature';
 
-const WORKER_API_URL = 'https://YOUR_WORKER_DOMAIN'; // 部署 Worker 后替换为实际域名
+const WORKER_API_URL = 'https://cf-panel.xmm2266.workers.dev';
 
 interface ApiResponse<T = any> {
   data: T | null;
