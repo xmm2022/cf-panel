@@ -80,13 +80,16 @@ import { PagesView } from "@/components/index-page/pages/PagesView";
 import { CreatePagesProjectDialog } from "@/components/index-page/pages/CreatePagesProjectDialog";
 import type { PagesDeploymentSummary, PagesProjectSummary } from "@/components/index-page/pages/pages-types";
 import { KvStorageView } from "@/components/index-page/kv-storage/KvStorageView";
+import { ProviderSwitcher } from "@/components/ProviderSwitcher";
 import {
   buildKvExportFileName,
   parseKvImportJson,
 } from "@/components/index-page/kv-storage/kv-storage-actions";
 import type { KvImportEntry } from "@/components/index-page/kv-storage/kv-storage-types";
+import type { ProviderId } from "@/lib/providers/types";
 import { Separator } from "@/components/ui/separator";
 import spiderIcon from "@/assets/spider-icon.png";
+import { useSearchParams } from "react-router-dom";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -275,8 +278,16 @@ interface PageRule {
   actions?: PageRuleAction[];
 }
 
+const isProviderId = (value: string | null): value is ProviderId =>
+  value === "cloudflare" || value === "edgeone" || value === "esa";
+
 const Index = () => {
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeProviderId, setActiveProviderId] = useState<ProviderId>(() => {
+    const provider = searchParams.get("provider");
+    return isProviderId(provider) ? provider : "cloudflare";
+  });
 
   // Cloudflare 凭据
   const [cfEmail, setCfEmail] = useState("");
@@ -460,6 +471,20 @@ const Index = () => {
   });
   const [showExpressionExamples, setShowExpressionExamples] = useState(false);
   const [editingFirewallRule, setEditingFirewallRule] = useState<FirewallRule | null>(null);
+
+  const handleProviderChange = (nextProviderId: ProviderId) => {
+    setActiveProviderId(nextProviderId);
+    setSearchParams((previousParams) => {
+      const nextParams = new URLSearchParams(previousParams);
+      nextParams.set("provider", nextProviderId);
+      return nextParams;
+    });
+    setSelectedZone("");
+    setSelectedZoneName("");
+    setDnsRecords([]);
+    setWorkerRoutes([]);
+    setActiveView("zones");
+  };
 
   // 首次进入页面规则视图时加载规则列表
   useEffect(() => {
@@ -3908,58 +3933,65 @@ const Index = () => {
                   {activeView === "auto-optimization" && "自动优化设置"}
                 </h1>
               </div>
-              <AlertDialog open={logoutDialogOpen} onOpenChange={setLogoutDialogOpen}>
-                <AlertDialogTrigger asChild>
-                  <Button variant="ghost">退出</Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>退出账号</AlertDialogTitle>
-                    <AlertDialogDescription>是否要退出当前账号，您也可以切换到其它账号</AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>取消</AlertDialogCancel>
-                    {savedAccounts.length > 1 && (
-                      <Button
-                        variant="outline"
+              <div className="flex items-center gap-3">
+                <ProviderSwitcher active={activeProviderId} onChange={handleProviderChange} />
+                <AlertDialog open={logoutDialogOpen} onOpenChange={setLogoutDialogOpen}>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="ghost">退出</Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>退出账号</AlertDialogTitle>
+                      <AlertDialogDescription>是否要退出当前账号，您也可以切换到其它账号</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>取消</AlertDialogCancel>
+                      {savedAccounts.length > 1 && (
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            // 切换到下一个账号
+                            const currentIndex = savedAccounts.findIndex((acc) => acc.id === currentAccountId);
+                            const nextIndex = (currentIndex + 1) % savedAccounts.length;
+                            const nextAccount = savedAccounts[nextIndex];
+                            switchAccount(nextAccount.id);
+                            setLogoutDialogOpen(false);
+                          }}
+                        >
+                          切换
+                        </Button>
+                      )}
+                      <AlertDialogAction
                         onClick={() => {
-                          // 切换到下一个账号
-                          const currentIndex = savedAccounts.findIndex((acc) => acc.id === currentAccountId);
-                          const nextIndex = (currentIndex + 1) % savedAccounts.length;
-                          const nextAccount = savedAccounts[nextIndex];
-                          switchAccount(nextAccount.id);
+                          // 完全退出
+                          clearCloudflareCredentials();
+                          // 清除当前账号标记，避免自动恢复
+                          try {
+                            localStorage.removeItem("cf_current_account_id");
+                          } catch {
+                            // ignore storage cleanup failures
+                          }
+                          // 清除可能遗留的旧会话存储
+                          try {
+                            sessionStorage.removeItem("cf_email");
+                            sessionStorage.removeItem("cf_api_key");
+                          } catch {
+                            // ignore storage cleanup failures
+                          }
+                          resetAllState();
+                          setCfEmail("");
+                          setCfApiKey("");
+                          setHasCredentials(false);
+                          setCurrentAccountId(null);
                           setLogoutDialogOpen(false);
                         }}
                       >
-                        切换
-                      </Button>
-                    )}
-                    <AlertDialogAction
-                      onClick={() => {
-                        // 完全退出
-                        clearCloudflareCredentials();
-                        // 清除当前账号标记，避免自动恢复
-                        try {
-                          localStorage.removeItem("cf_current_account_id");
-                        } catch {}
-                        // 清除可能遗留的旧会话存储
-                        try {
-                          sessionStorage.removeItem("cf_email");
-                          sessionStorage.removeItem("cf_api_key");
-                        } catch {}
-                        resetAllState();
-                        setCfEmail("");
-                        setCfApiKey("");
-                        setHasCredentials(false);
-                        setCurrentAccountId(null);
-                        setLogoutDialogOpen(false);
-                      }}
-                    >
-                      退出
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+                        退出
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </div>
           </header>
 
