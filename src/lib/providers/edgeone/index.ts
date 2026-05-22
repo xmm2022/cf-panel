@@ -1,6 +1,7 @@
 import type { CloudProvider } from "../provider";
 import { edgeoneDns } from "./dns";
 import { edgeoneKv } from "./kv";
+import { edgeonePageRules } from "./page-rules";
 import { edgeoneWorkers } from "./workers";
 import { edgeoneZones } from "./zones";
 
@@ -11,6 +12,7 @@ export const edgeoneProvider: CloudProvider = {
     zones: edgeoneZones,
     dns: edgeoneDns,
     kv: edgeoneKv,
+    pageRules: edgeonePageRules,
     workers: edgeoneWorkers,
   },
 };

@@ -78,6 +78,15 @@ import { AnalyticsView } from "@/components/index-page/analytics/AnalyticsView";
 import type { AnalyticsData, AnalyticsPeriod } from "@/components/index-page/analytics/analytics-types";
 import { WorkersView } from "@/components/index-page/workers/WorkersView";
 import type { WorkerListItem } from "@/components/index-page/workers/workers-types";
+import { PageRulesView } from "@/components/index-page/page-rules/PageRulesView";
+import {
+  buildPageRuleActions,
+  buildPageRuleTargets,
+  createEmptyPageRuleForm,
+  getPageRuleUrlPattern,
+  mapRuleToForm,
+} from "@/components/index-page/page-rules/page-rule-form";
+import type { PageRuleFormState } from "@/components/index-page/page-rules/page-rule-types";
 import { PagesView } from "@/components/index-page/pages/PagesView";
 import { CreatePagesProjectDialog } from "@/components/index-page/pages/CreatePagesProjectDialog";
 import type { PagesDeploymentSummary, PagesProjectSummary } from "@/components/index-page/pages/pages-types";
@@ -281,25 +290,6 @@ interface RateLimitRule {
   id: string;
 }
 
-interface PageRuleAction {
-  id: string;
-  value?: string | number | { status_code: number; url: string };
-}
-
-interface PageRuleTarget {
-  constraint?: {
-    value?: string;
-  };
-}
-
-interface PageRule {
-  id: string;
-  status: "active" | "disabled";
-  priority?: number;
-  targets?: PageRuleTarget[];
-  actions?: PageRuleAction[];
-}
-
 type IndexView =
   | "deploy"
   | "zones"
@@ -361,16 +351,6 @@ function toLegacyDnsRecord(record: ProviderDnsRecord): DNSRecord {
     content: record.content,
     proxied: record.proxied ?? false,
     ttl: record.ttl,
-  };
-}
-
-function toLegacyPageRule(rule: ProviderPageRule): PageRule {
-  return {
-    id: rule.id,
-    status: rule.status,
-    priority: rule.priority,
-    targets: Array.isArray(rule.rawTargets) ? (rule.rawTargets as PageRuleTarget[]) : undefined,
-    actions: Array.isArray(rule.rawActions) ? (rule.rawActions as PageRuleAction[]) : undefined,
   };
 }
 
@@ -604,21 +584,11 @@ const Index = () => {
   const [rateLimitRules, setRateLimitRules] = useState<RateLimitRule[]>([]);
   const [rateLimitRulesetId, setRateLimitRulesetId] = useState<string>("");
   const [showCreateRateLimitForm, setShowCreateRateLimitForm] = useState(false);
-  const [pageRules, setPageRules] = useState<PageRule[]>([]);
+  const [pageRules, setPageRules] = useState<ProviderPageRule[]>([]);
 
   // 页面规则表单状态
   const [editingPageRuleId, setEditingPageRuleId] = useState<string | null>(null);
-  const [newPageRule, setNewPageRule] = useState({
-    urlPattern: "",
-    cacheLevel: "",
-    browserCacheTtl: "",
-    securityLevel: "",
-    ssl: "",
-    alwaysUseHttps: "",
-    forwardingType: "",
-    forwardingUrl: "",
-    status: "active" as "active" | "disabled",
-  });
+  const [newPageRule, setNewPageRule] = useState<PageRuleFormState>(() => createEmptyPageRuleForm());
 
   // 性能优化设置
   const [brotliEnabled, setBrotliEnabled] = useState<boolean>(false);
@@ -834,7 +804,7 @@ const Index = () => {
     setIsLoading(true);
     try {
       const rules = await pageRulesCapability.list(credentials, selectedZone);
-      setPageRules(rules.map(toLegacyPageRule));
+      setPageRules(rules);
     } catch (error) {
       console.error("Load page rules error:", error);
       handleProviderLoadError(error, "加载页面规则失败");
@@ -844,11 +814,10 @@ const Index = () => {
   }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.pageRules, selectedZone]);
 
   const createOrUpdatePageRule = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey || !selectedZone) return;
+    const credentials = getActiveCredentials();
+    const pageRulesCapability = provider.capabilities.pageRules;
+    if (!credentials || !pageRulesCapability || !selectedZone) return;
 
-    // 验证必填字段
     if (!newPageRule.urlPattern.trim()) {
       toast({
         title: "请填写 URL 模式",
@@ -857,44 +826,7 @@ const Index = () => {
       return;
     }
 
-    // 构建 actions 数组
-    const actions: PageRuleAction[] = [];
-
-    // 检查是否有互斥的设置
-    const hasForwarding = newPageRule.forwardingType && newPageRule.forwardingUrl.trim();
-    const hasAlwaysHttps = newPageRule.alwaysUseHttps === "on";
-
-    // forwarding_url 和 always_use_https 不能与其他设置共存
-    if (hasForwarding) {
-      actions.push({
-        id: "forwarding_url",
-        value: {
-          url: newPageRule.forwardingUrl.trim(),
-          status_code: parseInt(newPageRule.forwardingType),
-        },
-      });
-    } else if (hasAlwaysHttps) {
-      // always_use_https 必须单独使用
-      actions.push({ id: "always_use_https" });
-    } else {
-      // 其他设置只有在不使用 forwarding 和 always_https 时才添加
-      if (newPageRule.cacheLevel && newPageRule.cacheLevel !== "") {
-        actions.push({ id: "cache_level", value: newPageRule.cacheLevel });
-      }
-
-      if (newPageRule.browserCacheTtl && newPageRule.browserCacheTtl !== "") {
-        actions.push({ id: "browser_cache_ttl", value: parseInt(newPageRule.browserCacheTtl) });
-      }
-
-      if (newPageRule.securityLevel && newPageRule.securityLevel !== "") {
-        actions.push({ id: "security_level", value: newPageRule.securityLevel });
-      }
-
-      if (newPageRule.ssl && newPageRule.ssl !== "") {
-        actions.push({ id: "ssl", value: newPageRule.ssl });
-      }
-    }
-
+    const actions = buildPageRuleActions(newPageRule);
     if (actions.length === 0) {
       toast({
         title: "请至少选择一个规则设置",
@@ -905,121 +837,143 @@ const Index = () => {
 
     setIsLoading(true);
     try {
-      // 如果是创建新规则，先尝试创建DNS记录
-      if (!editingPageRuleId) {
+      if (!editingPageRuleId && credentials.provider === "cloudflare") {
         try {
-          // 从URL模式中提取域名
           const urlPattern = newPageRule.urlPattern.trim();
           let hostname = "";
-
-          // 移除协议前缀
           const cleanUrl = urlPattern.replace(/^https?:\/\//, "");
-
-          // 提取域名部分（移除路径）
           const pathIndex = cleanUrl.indexOf("/");
           hostname = pathIndex > 0 ? cleanUrl.substring(0, pathIndex) : cleanUrl;
-
-          // 移除通配符
           hostname = hostname.replace(/\*/g, "").replace(/^\.+/, "");
 
           if (hostname && hostname.includes(".")) {
-            // 创建DNS A记录，开启代理
             const dnsResult = await supabase.functions.invoke("cloudflare-api", {
               body: {
                 action: "create_dns_record",
-                email,
-                apiKey,
+                email: credentials.email,
+                apiKey: credentials.apiKey,
                 zoneId: selectedZone,
                 recordData: {
                   type: "A",
                   name: hostname,
-                  content: "223.5.5.5", // 使用文档用途的保留IP
-                  proxied: true, // 开启Cloudflare代理
-                  ttl: 1, // 自动TTL
+                  content: "223.5.5.5",
+                  proxied: true,
+                  ttl: 1,
                 },
               },
             });
 
-            // DNS记录创建成功或已存在都继续
             if (dnsResult.data?.success || dnsResult.data?.errors?.[0]?.code === 81057) {
-              // 81057 = Record already exists
               console.log("DNS记录已就绪:", hostname);
             }
           }
         } catch (dnsError) {
           console.log("自动创建DNS记录失败，继续创建页面规则:", dnsError);
-          // 不阻断页面规则创建流程
         }
       }
 
+      const existingRule = editingPageRuleId
+        ? pageRules.find((rule) => rule.id === editingPageRuleId)
+        : undefined;
       const ruleData = {
-        targets: [
-          {
-            target: "url",
-            constraint: {
-              operator: "matches",
-              value: newPageRule.urlPattern.trim(),
-            },
-          },
-        ],
-        actions: actions,
+        id: editingPageRuleId ?? "",
+        zoneId: selectedZone,
         status: newPageRule.status,
+        priority: existingRule?.priority,
+        rawTargets: buildPageRuleTargets(newPageRule),
+        rawActions: actions,
       };
 
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: editingPageRuleId
-          ? {
-              action: "update_page_rule",
-              email,
-              apiKey,
-              zoneId: selectedZone,
-              pageRuleId: editingPageRuleId,
-              ruleData,
-            }
-          : {
-              action: "create_page_rule",
-              email,
-              apiKey,
-              zoneId: selectedZone,
-              ruleData,
-            },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        toast({
-          title: editingPageRuleId ? "页面规则更新成功" : "页面规则创建成功",
-          description: editingPageRuleId ? undefined : "已自动创建对应的DNS记录（如不存在）",
-        });
-        // 重置表单
-        setNewPageRule({
-          urlPattern: "",
-          cacheLevel: "",
-          browserCacheTtl: "",
-          securityLevel: "",
-          ssl: "",
-          alwaysUseHttps: "",
-          forwardingType: "",
-          forwardingUrl: "",
-          status: "active",
-        });
-        setEditingPageRuleId(null);
-        // 刷新列表
-        await loadPageRules();
+      if (editingPageRuleId) {
+        await pageRulesCapability.update(credentials, selectedZone, ruleData);
       } else {
-        const errorMessages =
-          data.messages?.map((m: { message: string }) => m.message).join("\n") || data.errors?.[0]?.message || "未知错误";
-        toast({
-          title: editingPageRuleId ? "更新失败" : "创建失败",
-          description: errorMessages,
-          variant: "destructive",
+        await pageRulesCapability.create(credentials, selectedZone, {
+          status: ruleData.status,
+          priority: ruleData.priority,
+          rawTargets: ruleData.rawTargets,
+          rawActions: ruleData.rawActions,
         });
       }
+
+      toast({
+        title: editingPageRuleId ? "页面规则更新成功" : "页面规则创建成功",
+        description:
+          !editingPageRuleId && credentials.provider === "cloudflare"
+            ? "已自动创建对应的DNS记录（如不存在）"
+            : undefined,
+      });
+      setNewPageRule(createEmptyPageRuleForm());
+      setEditingPageRuleId(null);
+      await loadPageRules();
     } catch (error) {
       console.error("Create/Update page rule error:", error);
       toast({
         title: editingPageRuleId ? "更新失败" : "创建失败",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleTogglePageRule = async (ruleId: string, checked: boolean) => {
+    const credentials = getActiveCredentials();
+    const pageRulesCapability = provider.capabilities.pageRules;
+    const rule = pageRules.find((item) => item.id === ruleId);
+    if (!credentials || !pageRulesCapability || !selectedZone || !rule) return;
+
+    setIsLoading(true);
+    try {
+      await pageRulesCapability.update(credentials, selectedZone, {
+        ...rule,
+        status: checked ? "active" : "disabled",
+      });
+      toast({ title: checked ? "规则已启用" : "规则已禁用" });
+      await loadPageRules();
+    } catch (error) {
+      console.error("Toggle page rule error:", error);
+      toast({
+        title: "更新失败",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleEditPageRule = (ruleId: string) => {
+    const rule = pageRules.find((item) => item.id === ruleId);
+    if (!rule) return;
+
+    setNewPageRule(mapRuleToForm(rule));
+    setEditingPageRuleId(rule.id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    toast({
+      title: "编辑模式",
+      description: "表单已填充数据",
+    });
+  };
+
+  const handleDeletePageRule = async (ruleId: string) => {
+    const credentials = getActiveCredentials();
+    const pageRulesCapability = provider.capabilities.pageRules;
+    const rule = pageRules.find((item) => item.id === ruleId);
+    if (!credentials || !pageRulesCapability || !selectedZone || !rule) return;
+
+    if (!confirm(`确定删除这条规则吗？\n${getPageRuleUrlPattern(rule) || rule.id}`)) return;
+
+    setIsLoading(true);
+    try {
+      await pageRulesCapability.delete(credentials, selectedZone, rule.id);
+      toast({ title: "删除成功" });
+      await loadPageRules();
+    } catch (error) {
+      console.error("Delete page rule error:", error);
+      toast({
+        title: "删除失败",
+        description: error instanceof Error ? error.message : "请求失败",
         variant: "destructive",
       });
     } finally {
@@ -1057,17 +1011,7 @@ const Index = () => {
     setFirewallRulesetId("");
     setPageRules([]);
     setEditingPageRuleId(null);
-    setNewPageRule({
-      urlPattern: "",
-      cacheLevel: "",
-      browserCacheTtl: "",
-      securityLevel: "",
-      ssl: "",
-      alwaysUseHttps: "",
-      forwardingType: "",
-      forwardingUrl: "",
-      status: "active",
-    });
+    setNewPageRule(createEmptyPageRuleForm());
     setBrotliEnabled(false);
     setRocketLoaderMode("off");
     setHttp3Enabled(false);
@@ -5974,493 +5918,28 @@ const Index = () => {
             )}
 
             {activeView === "page-rules" && selectedZone && (
-              <div className="max-w-4xl mx-auto">
-                <div className="mb-6">
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      setActiveView("zones");
-                      setSelectedZone("");
-                      setSelectedZoneName("");
-                    }}
-                  >
-                    ← 返回域名列表
-                  </Button>
-                </div>
-
-                <Card className="shadow-card mb-6">
-                  <CardHeader className="pb-4">
-                    <CardTitle className="flex items-center gap-2 text-lg">
-                      <Settings className="w-5 h-5" />
-                      页面规则管理
-                    </CardTitle>
-                    <CardDescription>当前域名: {selectedZoneName}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {/* 创建/编辑规则表单 */}
-                      <div className="p-3 border border-border/50 rounded-lg">
-                        <div className="flex items-center justify-between mb-3">
-                          <h3 className="font-medium text-sm">{editingPageRuleId ? "编辑页面规则" : "创建页面规则"}</h3>
-                          {editingPageRuleId && (
-                            <span className="text-xs text-primary bg-primary/10 px-2 py-1 rounded">编辑模式</span>
-                          )}
-                        </div>
-
-                        {/* 互斥规则提示 */}
-                        {(newPageRule.forwardingType || newPageRule.alwaysUseHttps === "on") && (
-                          <div className="mb-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-600 dark:text-yellow-400">
-                            ⚠️ 注意：URL转发 和 始终HTTPS 不能与其他设置同时使用
-                          </div>
-                        )}
-
-                        {/* URL 和状态 */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                          <div className="md:col-span-2">
-                            <Label className="text-xs mb-1 block">URL 模式 *</Label>
-                            <Input
-                              placeholder="*.example.com/images/*"
-                              value={newPageRule.urlPattern}
-                              onChange={(e) => setNewPageRule({ ...newPageRule, urlPattern: e.target.value })}
-                              className="h-9 text-sm"
-                            />
-                          </div>
-                          <div>
-                            <Label className="text-xs mb-1 block">规则状态</Label>
-                            <select
-                              className="w-full h-9 px-2 text-sm border border-border/50 rounded-md bg-background"
-                              value={newPageRule.status}
-                              onChange={(e) =>
-                                setNewPageRule({ ...newPageRule, status: e.target.value as "active" | "disabled" })
-                              }
-                            >
-                              <option value="active">启用</option>
-                              <option value="disabled">禁用</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        {/* 缓存和安全设置 */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                          <div>
-                            <Label className="text-xs mb-1 block">缓存级别</Label>
-                            <select
-                              className="w-full h-9 px-2 text-sm border border-border/50 rounded-md bg-background"
-                              value={newPageRule.cacheLevel}
-                              onChange={(e) => setNewPageRule({ ...newPageRule, cacheLevel: e.target.value })}
-                              disabled={!!newPageRule.forwardingType || newPageRule.alwaysUseHttps === "on"}
-                            >
-                              <option value="">不设置</option>
-                              <option value="bypass">绕过</option>
-                              <option value="basic">无查询字符串</option>
-                              <option value="simplified">忽略查询字符串</option>
-                              <option value="aggressive">标准</option>
-                              <option value="cache_everything">全部缓存</option>
-                            </select>
-                          </div>
-                          <div>
-                            <Label className="text-xs mb-1 block">浏览器缓存</Label>
-                            <select
-                              className="w-full h-9 px-2 text-sm border border-border/50 rounded-md bg-background"
-                              value={newPageRule.browserCacheTtl}
-                              onChange={(e) => setNewPageRule({ ...newPageRule, browserCacheTtl: e.target.value })}
-                              disabled={!!newPageRule.forwardingType || newPageRule.alwaysUseHttps === "on"}
-                            >
-                              <option value="">不设置</option>
-                              <option value="3600">1小时</option>
-                              <option value="14400">4小时</option>
-                              <option value="86400">1天</option>
-                              <option value="604800">1周</option>
-                            </select>
-                          </div>
-                          <div>
-                            <Label className="text-xs mb-1 block">安全级别</Label>
-                            <select
-                              className="w-full h-9 px-2 text-sm border border-border/50 rounded-md bg-background"
-                              value={newPageRule.securityLevel}
-                              onChange={(e) => setNewPageRule({ ...newPageRule, securityLevel: e.target.value })}
-                              disabled={!!newPageRule.forwardingType || newPageRule.alwaysUseHttps === "on"}
-                            >
-                              <option value="">不设置</option>
-                              <option value="off">关闭</option>
-                              <option value="low">低</option>
-                              <option value="medium">中</option>
-                              <option value="high">高</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        {/* SSL 和 HTTPS 设置 */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                          <div>
-                            <Label className="text-xs mb-1 block">SSL 模式</Label>
-                            <select
-                              className="w-full h-9 px-2 text-sm border border-border/50 rounded-md bg-background"
-                              value={newPageRule.ssl}
-                              onChange={(e) => setNewPageRule({ ...newPageRule, ssl: e.target.value })}
-                              disabled={!!newPageRule.forwardingType || newPageRule.alwaysUseHttps === "on"}
-                            >
-                              <option value="">不设置</option>
-                              <option value="off">关闭</option>
-                              <option value="flexible">灵活</option>
-                              <option value="full">完全</option>
-                              <option value="strict">严格</option>
-                            </select>
-                          </div>
-                          <div>
-                            <Label className="text-xs mb-1 block">始终 HTTPS</Label>
-                            <select
-                              className="w-full h-9 px-2 text-sm border border-border/50 rounded-md bg-background"
-                              value={newPageRule.alwaysUseHttps}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                setNewPageRule({
-                                  ...newPageRule,
-                                  alwaysUseHttps: value,
-                                  // 如果选择了 always_use_https，清空其他设置
-                                  ...(value === "on"
-                                    ? {
-                                        cacheLevel: "",
-                                        browserCacheTtl: "",
-                                        securityLevel: "",
-                                        ssl: "",
-                                      }
-                                    : {}),
-                                });
-                              }}
-                              disabled={!!newPageRule.forwardingType}
-                            >
-                              <option value="">不设置</option>
-                              <option value="on">开启</option>
-                              <option value="off">关闭</option>
-                            </select>
-                          </div>
-                          <div>
-                            <Label className="text-xs mb-1 block">转发类型</Label>
-                            <select
-                              className="w-full h-9 px-2 text-sm border border-border/50 rounded-md bg-background"
-                              value={newPageRule.forwardingType}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                setNewPageRule({
-                                  ...newPageRule,
-                                  forwardingType: value,
-                                  // 如果选择了转发，清空其他设置
-                                  ...(value
-                                    ? {
-                                        cacheLevel: "",
-                                        browserCacheTtl: "",
-                                        securityLevel: "",
-                                        ssl: "",
-                                        alwaysUseHttps: "",
-                                      }
-                                    : {}),
-                                });
-                              }}
-                              disabled={newPageRule.alwaysUseHttps === "on"}
-                            >
-                              <option value="">不设置</option>
-                              <option value="301">301 永久</option>
-                              <option value="302">302 临时</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        {/* 转发 URL */}
-                        {newPageRule.forwardingType && (
-                          <div className="mb-3">
-                            <Label className="text-xs mb-1 block">目标 URL</Label>
-                            <Input
-                              placeholder="https://example.com/new-path"
-                              value={newPageRule.forwardingUrl}
-                              onChange={(e) => setNewPageRule({ ...newPageRule, forwardingUrl: e.target.value })}
-                              className="h-9 text-sm"
-                            />
-                          </div>
-                        )}
-
-                        {/* 按钮 */}
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setNewPageRule({
-                                urlPattern: "",
-                                cacheLevel: "",
-                                browserCacheTtl: "",
-                                securityLevel: "",
-                                ssl: "",
-                                alwaysUseHttps: "",
-                                forwardingType: "",
-                                forwardingUrl: "",
-                                status: "active",
-                              });
-                              setEditingPageRuleId(null);
-                            }}
-                            disabled={isLoading}
-                          >
-                            {editingPageRuleId ? "取消" : "重置"}
-                          </Button>
-                          <Button size="sm" onClick={createOrUpdatePageRule} disabled={isLoading}>
-                            {isLoading ? (
-                              <>
-                                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                                {editingPageRuleId ? "更新中" : "创建中"}
-                              </>
-                            ) : editingPageRuleId ? (
-                              "更新规则"
-                            ) : (
-                              "创建规则"
-                            )}
-                          </Button>
-                        </div>
-                      </div>
-
-                      {/* 现有规则列表 */}
-                      <div className="p-3 border border-border/50 rounded-lg">
-                        <div className="flex justify-between items-center mb-3">
-                          <h3 className="font-medium text-sm">现有规则</h3>
-                          <Button variant="outline" size="sm" onClick={loadPageRules} disabled={isLoading}>
-                            {isLoading ? (
-                              <>
-                                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                                加载中
-                              </>
-                            ) : (
-                              "刷新"
-                            )}
-                          </Button>
-                        </div>
-                        {pageRules.length === 0 ? (
-                          <div className="text-xs text-muted-foreground text-center py-3">暂无页面规则</div>
-                        ) : (
-                          <div className="space-y-2">
-                            {pageRules.map((rule: any) => (
-                              <div
-                                key={rule.id}
-                                className="p-3 border border-border/50 rounded-lg hover:bg-accent/5 transition-colors"
-                              >
-                                <div className="flex justify-between items-center gap-3">
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <Switch
-                                        checked={rule.status === "active"}
-                                        onCheckedChange={async (checked) => {
-                                          const email = getCookie("cf_email") || cfEmail;
-                                          const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                          if (!email || !apiKey) {
-                                            toast({ title: "请先配置 Cloudflare 凭证", variant: "destructive" });
-                                            return;
-                                          }
-
-                                          setIsLoading(true);
-                                          try {
-                                            // 发送完整的规则数据，只修改 status
-                                            const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                              body: {
-                                                action: "update_page_rule",
-                                                email,
-                                                apiKey,
-                                                zoneId: selectedZone,
-                                                pageRuleId: rule.id,
-                                                ruleData: {
-                                                  targets: rule.targets,
-                                                  actions: rule.actions,
-                                                  priority: rule.priority,
-                                                  status: checked ? "active" : "disabled",
-                                                },
-                                              },
-                                            });
-
-                                            if (error) throw error;
-
-                                            if (data.success) {
-                                              toast({
-                                                title: checked ? "规则已启用" : "规则已禁用",
-                                              });
-                                              await loadPageRules();
-                                            } else {
-                                              toast({
-                                                title: "更新失败",
-                                                description: data.errors?.[0]?.message || "未知错误",
-                                                variant: "destructive",
-                                              });
-                                            }
-                                          } catch (error) {
-                                            console.error("Toggle page rule error:", error);
-                                            toast({
-                                              title: "更新失败",
-                                              variant: "destructive",
-                                            });
-                                          } finally {
-                                            setIsLoading(false);
-                                          }
-                                        }}
-                                        disabled={isLoading}
-                                      />
-                                      <span
-                                        className={`text-xs font-medium ${
-                                          rule.status === "active" ? "text-green-500" : "text-gray-500"
-                                        }`}
-                                      >
-                                        {rule.status === "active" ? "启用" : "禁用"}
-                                      </span>
-                                      <span className="text-xs text-muted-foreground">P{rule.priority}</span>
-                                    </div>
-                                    <p className="text-xs font-medium mb-1 truncate">
-                                      {rule.targets?.[0]?.constraint?.value || "未设置"}
-                                    </p>
-                                    <div className="flex flex-wrap gap-1">
-                                      {rule.actions?.map((action: any, idx: number) => (
-                                        <span
-                                          key={`${action.id}-${idx}`}
-                                          className="text-[10px] px-1.5 py-0.5 bg-primary/10 text-primary rounded"
-                                        >
-                                          {action.id === "forwarding_url" && typeof action.value === "object"
-                                            ? `${action.value.status_code} → ${action.value.url}`
-                                            : action.id === "always_use_https"
-                                              ? "Always HTTPS"
-                                              : typeof action.value === "object"
-                                                ? JSON.stringify(action.value)
-                                                : `${action.id.replace(/_/g, " ")}: ${action.value}`}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  </div>
-                                  <div className="flex gap-1 flex-shrink-0">
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      className="h-7 w-7 p-0"
-                                      onClick={() => {
-                                        const urlPattern = rule.targets?.[0]?.constraint?.value || "";
-                                        const formData: any = {
-                                          urlPattern,
-                                          cacheLevel: "",
-                                          browserCacheTtl: "",
-                                          securityLevel: "",
-                                          ssl: "",
-                                          alwaysUseHttps: "",
-                                          forwardingType: "",
-                                          forwardingUrl: "",
-                                          status: rule.status,
-                                        };
-
-                                        rule.actions?.forEach((action: any) => {
-                                          if (action.id === "cache_level") {
-                                            formData.cacheLevel = action.value;
-                                          } else if (action.id === "browser_cache_ttl") {
-                                            formData.browserCacheTtl = action.value.toString();
-                                          } else if (action.id === "security_level") {
-                                            formData.securityLevel = action.value;
-                                          } else if (action.id === "ssl") {
-                                            formData.ssl = action.value;
-                                          } else if (action.id === "always_use_https") {
-                                            formData.alwaysUseHttps = action.value;
-                                          } else if (action.id === "forwarding_url") {
-                                            formData.forwardingType = action.value.status_code.toString();
-                                            formData.forwardingUrl = action.value.url;
-                                          }
-                                        });
-
-                                        setNewPageRule(formData);
-                                        setEditingPageRuleId(rule.id);
-                                        window.scrollTo({ top: 0, behavior: "smooth" });
-
-                                        toast({
-                                          title: "编辑模式",
-                                          description: "表单已填充数据",
-                                        });
-                                      }}
-                                      disabled={isLoading}
-                                    >
-                                      <Edit className="w-3 h-3" />
-                                    </Button>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      className="h-7 w-7 p-0"
-                                      onClick={async () => {
-                                        const email = getCookie("cf_email") || cfEmail;
-                                        const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                        if (!email || !apiKey) {
-                                          toast({
-                                            title: "请先配置 Cloudflare 凭证",
-                                            variant: "destructive",
-                                          });
-                                          return;
-                                        }
-
-                                        if (!confirm(`确定删除这条规则吗？\n${rule.targets?.[0]?.constraint?.value}`))
-                                          return;
-
-                                        setIsLoading(true);
-                                        try {
-                                          console.log("Deleting page rule:", {
-                                            ruleId: rule.id,
-                                            zoneId: selectedZone,
-                                            email,
-                                            hasApiKey: !!apiKey,
-                                          });
-
-                                          const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                            body: {
-                                              action: "delete_page_rule",
-                                              email,
-                                              apiKey,
-                                              zoneId: selectedZone,
-                                              pageRuleId: rule.id,
-                                            },
-                                          });
-
-                                          console.log("Delete page rule response:", { data, error });
-
-                                          if (error) {
-                                            console.error("API error:", error);
-                                            throw error;
-                                          }
-
-                                          if (data?.success) {
-                                            toast({
-                                              title: "删除成功",
-                                            });
-                                            await loadPageRules();
-                                          } else {
-                                            const errorMsg = data?.errors?.[0]?.message || data?.error || "未知错误";
-                                            console.error("Delete failed:", data);
-                                            toast({
-                                              title: "删除失败",
-                                              description: errorMsg,
-                                              variant: "destructive",
-                                            });
-                                          }
-                                        } catch (error) {
-                                          console.error("Delete page rule error:", error);
-                                          toast({
-                                            title: "删除失败",
-                                            description: error.message || "请求失败",
-                                            variant: "destructive",
-                                          });
-                                        } finally {
-                                          setIsLoading(false);
-                                        }
-                                      }}
-                                      disabled={isLoading}
-                                    >
-                                      <Trash2 className="w-3 h-3" />
-                                    </Button>
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+              <PageRulesView
+                selectedZoneName={selectedZoneName}
+                isLoading={isLoading}
+                editingPageRuleId={editingPageRuleId}
+                pageRules={pageRules}
+                newPageRule={newPageRule}
+                onBack={() => {
+                  setActiveView("zones");
+                  setSelectedZone("");
+                  setSelectedZoneName("");
+                }}
+                onFormChange={setNewPageRule}
+                onResetForm={() => {
+                  setNewPageRule(createEmptyPageRuleForm());
+                  setEditingPageRuleId(null);
+                }}
+                onSubmit={createOrUpdatePageRule}
+                onRefresh={loadPageRules}
+                onToggleRule={handleTogglePageRule}
+                onEditRule={handleEditPageRule}
+                onDeleteRule={handleDeletePageRule}
+              />
             )}
 
             {activeView === "kv-storage" && (
