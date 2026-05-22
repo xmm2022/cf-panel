@@ -91,6 +91,7 @@ import { PagesView } from "@/components/index-page/pages/PagesView";
 import { CreatePagesProjectDialog } from "@/components/index-page/pages/CreatePagesProjectDialog";
 import type { PagesDeploymentSummary, PagesProjectSummary } from "@/components/index-page/pages/pages-types";
 import { KvStorageView } from "@/components/index-page/kv-storage/KvStorageView";
+import { CertificatesView } from "@/components/index-page/certificates/CertificatesView";
 import { ProviderSwitcher } from "@/components/ProviderSwitcher";
 import {
   buildSidebarItems,
@@ -110,7 +111,7 @@ import type { Tunnel } from "@/lib/providers/capabilities/tunnels";
 import { ProviderError } from "@/lib/providers/errors";
 import { providers } from "@/lib/providers/registry";
 import type {
-  Certificate as ProviderCertificate,
+  Certificate,
   DnsRecord as ProviderDnsRecord,
   PageRule as ProviderPageRule,
   ProviderCredentials,
@@ -240,13 +241,6 @@ interface TunnelSummary {
   connections?: TunnelConnection[];
 }
 
-interface CertificateSummary {
-  id: string;
-  hosts?: string[];
-  expires_on: string;
-  status: string;
-}
-
 interface KVNamespaceSummary {
   id: string;
   title: string;
@@ -351,15 +345,6 @@ function toLegacyDnsRecord(record: ProviderDnsRecord): DNSRecord {
     content: record.content,
     proxied: record.proxied ?? false,
     ttl: record.ttl,
-  };
-}
-
-function toLegacyCertificate(certificate: ProviderCertificate): CertificateSummary {
-  return {
-    id: certificate.id,
-    hosts: certificate.hosts,
-    expires_on: certificate.expiresOn,
-    status: certificate.status,
   };
 }
 
@@ -490,7 +475,7 @@ const Index = () => {
   const [d1Databases, setD1Databases] = useState<D1DatabaseSummary[]>([]);
   const [r2Buckets, setR2Buckets] = useState<R2BucketSummary[]>([]);
   const [tunnels, setTunnels] = useState<TunnelSummary[]>([]);
-  const [certificates, setCertificates] = useState<CertificateSummary[]>([]);
+  const [certificates, setCertificates] = useState<Certificate[]>([]);
   const [kvNamespaces, setKvNamespaces] = useState<KVNamespaceSummary[]>([]);
   const [selectedKvNamespace, setSelectedKvNamespace] = useState<string>("");
   const [kvKeys, setKvKeys] = useState<KVKeySummary[]>([]);
@@ -1605,7 +1590,7 @@ const Index = () => {
     setIsLoading(true);
     try {
       const list = await certificatesCapability.list(credentials, selectedZone);
-      setCertificates(list.map(toLegacyCertificate));
+      setCertificates(list);
     } catch (error) {
       console.error("Load certificates error:", error);
       // 静默处理，不显示错误提示
@@ -5971,214 +5956,17 @@ const Index = () => {
             {activeView === "certificates" && (
               <div className="max-w-4xl mx-auto">
                 {selectedZone ? (
-                  <>
-                    <div className="mb-6">
-                      <Button
-                        variant="ghost"
-                        onClick={() => {
-                          setActiveView("zones");
-                          setSelectedZone("");
-                          setSelectedZoneName("");
-                        }}
-                      >
-                        ← 返回域名列表
-                      </Button>
-                    </div>
-
-                    <Card className="shadow-card mb-6">
-                      <CardHeader>
-                        <CardTitle className="flex items-center gap-2">
-                          <Shield className="w-5 h-5" />
-                          自定义证书管理
-                        </CardTitle>
-                        <CardDescription>当前域名: {selectedZoneName}</CardDescription>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="space-y-6">
-                          {/* 上传自定义证书 */}
-                          <div className="p-4 border border-border/50 rounded-lg bg-muted/20">
-                            <h3 className="font-medium mb-2">上传自定义 SSL 证书</h3>
-                            <p className="text-sm text-muted-foreground mb-4">上传您自己的 SSL/TLS 证书和私钥</p>
-                            <div className="space-y-3">
-                              <div>
-                                <Label className="text-sm mb-2 block">证书（Certificate）</Label>
-                                <textarea
-                                  id="custom-cert"
-                                  placeholder="-----BEGIN CERTIFICATE-----
-...
------END CERTIFICATE-----"
-                                  className="w-full min-h-[120px] p-2 border border-border/50 rounded-md bg-background font-mono text-xs"
-                                  disabled
-                                />
-                              </div>
-                              <div>
-                                <Label className="text-sm mb-2 block">私钥（Private Key）</Label>
-                                <textarea
-                                  id="custom-key"
-                                  placeholder="-----BEGIN PRIVATE KEY-----
-...
------END PRIVATE KEY-----"
-                                  className="w-full min-h-[120px] p-2 border border-border/50 rounded-md bg-background font-mono text-xs"
-                                  disabled
-                                />
-                              </div>
-                              <div>
-                                <Label className="text-sm mb-2 block">证书链（可选）</Label>
-                                <textarea
-                                  id="custom-bundle"
-                                  placeholder="中间证书和根证书（可选）"
-                                  className="w-full min-h-[80px] p-2 border border-border/50 rounded-md bg-background font-mono text-xs"
-                                  disabled
-                                />
-                              </div>
-                              <Button disabled variant="outline">
-                                上传证书
-                              </Button>
-                              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-md">
-                                <p className="text-xs text-amber-600 dark:text-amber-400">
-                                  ⚠️ 自定义证书功能需要 Cloudflare 企业版或更高版本账户。
-                                  <br />
-                                  免费版和 Pro 版账户自动使用 Cloudflare Universal SSL。
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* 证书状态监控 */}
-                          <div className="p-4 border border-border/50 rounded-lg">
-                            <div className="flex justify-between items-center mb-4">
-                              <h3 className="font-medium">证书状态监控</h3>
-                              <Button variant="outline" size="sm" onClick={loadCertificates} disabled={isLoading}>
-                                {isLoading ? (
-                                  <>
-                                    <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                                    刷新中...
-                                  </>
-                                ) : (
-                                  "刷新状态"
-                                )}
-                              </Button>
-                            </div>
-                            <div className="space-y-2">
-                              <div className="flex justify-between text-sm p-3 bg-green-500/10 border border-green-500/20 rounded">
-                                <span className="text-muted-foreground">Cloudflare Universal SSL</span>
-                                <span className="text-green-600 dark:text-green-400 font-medium">● 已激活</span>
-                              </div>
-                              <div className="p-3 bg-muted/30 rounded text-sm text-muted-foreground">
-                                <p className="mb-2">
-                                  您的域名已自动启用 Cloudflare Universal SSL，提供免费的 HTTPS 加密。
-                                </p>
-                                <ul className="list-disc list-inside space-y-1 text-xs">
-                                  <li>自动颁发和续期</li>
-                                  <li>支持 TLS 1.2 和 TLS 1.3</li>
-                                  <li>覆盖主域名和一级子域名</li>
-                                </ul>
-                              </div>
-                              {certificates.length === 0 ? (
-                                <div className="text-sm text-muted-foreground text-center py-4 border border-border/50 rounded-lg">
-                                  当前账户无自定义证书（需要企业版）
-                                </div>
-                              ) : (
-                                <div className="space-y-2">
-                                  {certificates.map((cert: any) => (
-                                    <div key={cert.id} className="p-3 border border-border/50 rounded-lg">
-                                      <div className="flex justify-between items-start mb-2">
-                                        <div className="flex-1">
-                                          <div className="font-medium text-sm">
-                                            {cert.hosts?.join(", ") || "Unknown"}
-                                          </div>
-                                          <div className="text-xs text-muted-foreground mt-1">
-                                            到期时间: {new Date(cert.expires_on).toLocaleDateString("zh-CN")}
-                                          </div>
-                                          <div className="text-xs text-muted-foreground">状态: {cert.status}</div>
-                                        </div>
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={async () => {
-                                            if (!confirm("确定要删除此证书吗？")) return;
-
-                                            const email = getCookie("cf_email");
-                                            const apiKey = getCookie("cf_api_key");
-                                            if (!email || !apiKey) return;
-
-                                            setIsLoading(true);
-                                            try {
-                                              const { data, error } = await supabase.functions.invoke(
-                                                "cloudflare-api",
-                                                {
-                                                  body: {
-                                                    action: "delete_certificate",
-                                                    email,
-                                                    apiKey,
-                                                    zoneId: selectedZone,
-                                                    certificateId: cert.id,
-                                                  },
-                                                },
-                                              );
-
-                                              if (error) throw error;
-
-                                              if (data.success) {
-                                                toast({
-                                                  title: "证书已删除",
-                                                });
-                                                loadCertificates();
-                                              } else {
-                                                throw new Error(data.errors?.[0]?.message || "删除失败");
-                                              }
-                                            } catch (error: any) {
-                                              console.error("Delete certificate error:", error);
-                                              toast({
-                                                title: "删除失败",
-                                                description: error.message,
-                                                variant: "destructive",
-                                              });
-                                            } finally {
-                                              setIsLoading(false);
-                                            }
-                                          }}
-                                          disabled={isLoading}
-                                        >
-                                          <Trash2 className="w-4 h-4" />
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* 证书到期提醒 */}
-                          <div className="p-4 border border-border/50 rounded-lg">
-                            <h3 className="font-medium mb-2">证书到期提醒</h3>
-                            <p className="text-sm text-muted-foreground mb-4">自动监控证书有效期并在到期前提醒</p>
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-between p-3 bg-muted/30 rounded">
-                                <div>
-                                  <div className="text-sm font-medium">提醒时间</div>
-                                  <div className="text-xs text-muted-foreground">证书到期前 30 天</div>
-                                </div>
-                                <Button variant="outline" size="sm">
-                                  配置
-                                </Button>
-                              </div>
-                              <div className="flex items-center justify-between p-3 bg-muted/30 rounded">
-                                <div>
-                                  <div className="text-sm font-medium">通知方式</div>
-                                  <div className="text-xs text-muted-foreground">邮件通知</div>
-                                </div>
-                                <Button variant="outline" size="sm">
-                                  修改
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </>
+                  <CertificatesView
+                    certificates={certificates}
+                    isLoading={isLoading}
+                    selectedZoneName={selectedZoneName}
+                    onBack={() => {
+                      setActiveView("zones");
+                      setSelectedZone("");
+                      setSelectedZoneName("");
+                    }}
+                    onRefresh={loadCertificates}
+                  />
                 ) : (
                   <Card className="shadow-card">
                     <CardContent className="py-16 text-center">

@@ -1,4 +1,5 @@
 import type { CloudProvider } from "../provider";
+import { edgeoneCertificates } from "./certificates";
 import { edgeoneDns } from "./dns";
 import { edgeoneKv } from "./kv";
 import { edgeonePageRules } from "./page-rules";
@@ -14,5 +15,6 @@ export const edgeoneProvider: CloudProvider = {
     kv: edgeoneKv,
     pageRules: edgeonePageRules,
     workers: edgeoneWorkers,
+    certificates: edgeoneCertificates,
   },
 };
