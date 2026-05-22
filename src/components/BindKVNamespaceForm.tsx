@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { getCurrentAccount } from "@/lib/accounts-storage";
+import { invokeProviderApi } from "@/lib/cloudflare-worker-api";
 
 interface BindKVNamespaceFormProps {
   open: boolean;
@@ -50,12 +51,15 @@ export function BindKVNamespaceForm({ open, onOpenChange, workerId, workerName, 
       setIsFetchingNamespaces(true);
 
       try {
-        const { data, error } = await invokeWorkerApi<KVNamespaceListResponse>("cloudflare-api", {
+        const currentAccount = getCurrentAccount();
+        if (!currentAccount || currentAccount.provider !== "cloudflare") {
+          throw new Error("请先登录 Cloudflare 账号");
+        }
+
+        const { data, error } = await invokeProviderApi<KVNamespaceListResponse>("auto", {
           action: "list_kv_namespaces",
-          email,
-          apiKey,
           accountId,
-        });
+        }, currentAccount.credentials);
 
         if (error) throw error;
 
@@ -101,17 +105,25 @@ export function BindKVNamespaceForm({ open, onOpenChange, workerId, workerName, 
     setIsLoading(true);
 
     try {
-      const { data, error } = await invokeWorkerApi<BindKVNamespaceResponse>("cloudflare-api", {
+      const currentAccount = getCurrentAccount();
+      if (!currentAccount || currentAccount.provider !== "cloudflare") {
+        toast({
+          title: "缺少凭据",
+          description: "请先登录 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const { data, error } = await invokeProviderApi<BindKVNamespaceResponse>("auto", {
         action: "bind_kv_to_worker",
-        email,
-        apiKey,
         accountId,
         scriptName: workerId,
         data: {
           namespace_id: selectedNamespace,
           binding_name: bindingName,
         },
-      });
+      }, currentAccount.credentials);
 
       if (error) throw error;
 

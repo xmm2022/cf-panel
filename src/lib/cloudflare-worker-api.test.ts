@@ -43,4 +43,11 @@ describe("invokeProviderApi", () => {
 
     expect(fetchMock.mock.calls[0][0]).toContain("/api/edgeone-api");
   });
+
+  it("does not expose the legacy worker API export", async () => {
+    const api = await import("./cloudflare-worker-api");
+    const legacyExport = ["invoke", "Worker", "Api"].join("");
+
+    expect(api).not.toHaveProperty(legacyExport);
+  });
 });

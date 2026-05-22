@@ -7,7 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Loader2, CheckCircle2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { getCookie } from "@/lib/cookies";
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { supabase } from "@/lib/supabase-adapter";
 type DeploymentStep = "domains" | "deploy" | "complete";
 
 interface FormData {
@@ -95,13 +95,15 @@ export const DeploymentForm = ({ cfEmail, cfApiKey }: DeploymentFormProps) => {
       // Simulate progress updates
       setDeployProgress(25);
       
-      const { data, error } = await invokeWorkerApi('deploy-worker', {
+      const { data, error } = await supabase.functions.invoke('deploy-worker', {
+        body: {
         email,
         apiKey,
         targetDomain: formData.targetDomain,
         accessDomain: formData.accessDomain,
         optimizedDomain: formData.optimizedDomain,
         cacheTtl: parseInt(formData.cacheTtl) || 0,
+        },
       });
 
       setDeployProgress(75);

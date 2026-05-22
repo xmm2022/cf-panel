@@ -25,37 +25,6 @@ function resolveWorkerApiBaseUrl(): string {
   );
 }
 
-export async function invokeWorkerApi<T = unknown>(
-  endpoint: string,
-  body: Record<string, unknown>
-): Promise<ApiResponse<T>> {
-  try {
-    const response = await fetch(`${resolveWorkerApiBaseUrl()}/api/${endpoint}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    return {
-      data: await response.json(),
-      error: null,
-    };
-  } catch (error) {
-    console.error(`Worker API Error (${endpoint}):`, error);
-    return {
-      data: null,
-      error: error instanceof Error ? error : new Error(String(error)),
-    };
-  }
-}
-
 function endpointForProvider(provider: ProviderCredentials["provider"]): string {
   switch (provider) {
     case "cloudflare":

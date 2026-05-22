@@ -18,7 +18,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { getCurrentAccount } from "@/lib/accounts-storage";
+import { invokeProviderApi } from "@/lib/cloudflare-worker-api";
 
 interface CreateD1DatabaseFormProps {
   open: boolean;
@@ -31,8 +32,6 @@ interface CreateD1DatabaseFormProps {
 
 interface CreateD1DatabaseRequest {
   action: "create_d1_database";
-  email: string;
-  apiKey: string;
   accountId: string;
   name: string;
   primary_location_hint?: string;
@@ -79,10 +78,18 @@ export function CreateD1DatabaseForm({
 
     setIsLoading(true);
     try {
+      const currentAccount = getCurrentAccount();
+      if (!currentAccount || currentAccount.provider !== "cloudflare") {
+        toast({
+          title: "缺少凭据",
+          description: "请先登录 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
       const baseBody: CreateD1DatabaseRequest = {
         action: "create_d1_database",
-        email,
-        apiKey,
         accountId,
         name: sanitizedName,
       };
@@ -108,7 +115,7 @@ export function CreateD1DatabaseForm({
         }
 
         console.log("=== D1 Create Attempt ===", s.label, body);
-        const wf = await invokeWorkerApi<CreateD1DatabaseResponse>("cloudflare-api", body);
+        const wf = await invokeProviderApi<CreateD1DatabaseResponse>("auto", body, currentAccount.credentials);
         const data = wf.data;
         const error = wf.error;
         console.log("Attempt Response:", { error, data });

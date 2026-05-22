@@ -5,8 +5,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
-import { getCookie } from "@/lib/cookies";
+import { getCurrentAccount } from "@/lib/accounts-storage";
+import { invokeProviderApi } from "@/lib/cloudflare-worker-api";
 
 interface EditWorkerFormProps {
   open: boolean;
@@ -66,13 +66,16 @@ export function EditWorkerForm({ open, onOpenChange, workerId, workerName, accou
       }
 
       try {
-        const { data, error } = await invokeWorkerApi<WorkerScriptResponse>('cloudflare-api', {
+        const currentAccount = getCurrentAccount();
+        if (!currentAccount || currentAccount.provider !== "cloudflare") {
+          throw new Error("请先登录 Cloudflare 账号");
+        }
+
+        const { data, error } = await invokeProviderApi<WorkerScriptResponse>("auto", {
           action: 'get_worker_script',
-          email,
-          apiKey,
           accountId,
           scriptName: workerId,
-        });
+        }, currentAccount.credentials);
 
         if (error) throw error;
 
@@ -112,22 +115,30 @@ export function EditWorkerForm({ open, onOpenChange, workerId, workerName, accou
     setIsLoading(true);
 
     try {
+      const currentAccount = getCurrentAccount();
+      if (!currentAccount || currentAccount.provider !== "cloudflare") {
+        toast({
+          title: "缺少凭据",
+          description: "请先登录 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
       // 排除 secret_text 类型（API 不返回值，无法重新提交）
       const bindingsToKeep = (currentBindings || []).filter(b => b.type !== 'secret_text');
       
       console.log('Uploading worker with bindings:', bindingsToKeep);
 
-      const { data, error } = await invokeWorkerApi<UploadWorkerResponse>('cloudflare-api', {
+      const { data, error } = await invokeProviderApi<UploadWorkerResponse>("auto", {
         action: 'upload_worker',
-        email,
-        apiKey,
         accountId,
         scriptName: workerId,
         data: {
           script: workerScript,
           bindings: bindingsToKeep, // 明确传递 bindings
         },
-      });
+      }, currentAccount.credentials);
 
       if (error) throw error;
 

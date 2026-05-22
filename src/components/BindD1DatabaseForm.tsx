@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { getCurrentAccount } from "@/lib/accounts-storage";
+import { invokeProviderApi } from "@/lib/cloudflare-worker-api";
 
 interface BindD1DatabaseFormProps {
   open: boolean;
@@ -52,12 +53,15 @@ export function BindD1DatabaseForm({ open, onOpenChange, workerId, workerName, a
       setIsFetchingDatabases(true);
 
       try {
-        const { data, error } = await invokeWorkerApi<D1DatabaseListResponse>("cloudflare-api", {
+        const currentAccount = getCurrentAccount();
+        if (!currentAccount || currentAccount.provider !== "cloudflare") {
+          throw new Error("请先登录 Cloudflare 账号");
+        }
+
+        const { data, error } = await invokeProviderApi<D1DatabaseListResponse>("auto", {
           action: "list_d1_databases",
-          email,
-          apiKey,
           accountId,
-        });
+        }, currentAccount.credentials);
 
         if (error) throw error;
 
@@ -103,17 +107,25 @@ export function BindD1DatabaseForm({ open, onOpenChange, workerId, workerName, a
     setIsLoading(true);
 
     try {
-      const { data, error } = await invokeWorkerApi<BindD1Response>("cloudflare-api", {
+      const currentAccount = getCurrentAccount();
+      if (!currentAccount || currentAccount.provider !== "cloudflare") {
+        toast({
+          title: "缺少凭据",
+          description: "请先登录 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const { data, error } = await invokeProviderApi<BindD1Response>("auto", {
         action: "bind_d1_to_worker",
-        email,
-        apiKey,
         accountId,
         scriptName: workerId,
         data: {
           database_id: selectedDatabase,
           binding_name: bindingName,
         },
-      });
+      }, currentAccount.credentials);
 
       if (error) throw error;
 

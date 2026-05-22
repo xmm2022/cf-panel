@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase-adapter";
 import { useToast } from "@/hooks/use-toast";
 import { getCookie, setCookie } from "@/lib/cookies";
-import { setCloudflareCredentials, clearCloudflareCredentials } from "@/lib/cloudflare-credentials";
+import { clearCloudflareCredentials } from "@/lib/cloudflare-credentials";
 import {
   CloudflareAccount,
   getAllAccounts,
@@ -12,7 +12,7 @@ import {
   deleteAccount,
 } from "@/lib/accounts-storage";
 import { recordOperation } from "@/lib/operation-logger";
-import { invokeProviderApi, invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { invokeProviderApi } from "@/lib/cloudflare-worker-api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -91,12 +91,24 @@ import { CreatePagesProjectDialog } from "@/components/index-page/pages/CreatePa
 import type { PagesDeploymentSummary, PagesProjectSummary } from "@/components/index-page/pages/pages-types";
 import { KvStorageView } from "@/components/index-page/kv-storage/KvStorageView";
 import { CertificatesView } from "@/components/index-page/certificates/CertificatesView";
+import { D1DatabaseView } from "@/components/index-page/d1-database/D1DatabaseView";
+import { R2StorageView } from "@/components/index-page/r2-storage/R2StorageView";
+import { TunnelsView } from "@/components/index-page/tunnels/TunnelsView";
 import { ProviderSwitcher } from "@/components/ProviderSwitcher";
 import {
   buildSidebarItems,
   type CapabilitySidebarKey,
   type SidebarItem,
 } from "@/components/index-page/shared/capability-menu";
+import type {
+  D1DatabaseSummary,
+  D1QueryResult,
+  KVKeySummary,
+  KVNamespaceSummary,
+  R2BucketSummary,
+  R2ObjectSummary,
+  TunnelSummary,
+} from "@/components/index-page/shared/index-page-types";
 import {
   buildKvExportFileName,
   parseKvImportJson,
@@ -212,75 +224,32 @@ interface WorkerBinding {
   realName?: string;
 }
 
-interface D1DatabaseSummary {
-  uuid: string;
-  name: string;
-  version?: string;
-  created_at: string;
-}
-
-interface R2BucketSummary {
-  name: string;
-  creation_date: string;
-  location?: string;
-}
-
-interface TunnelConnection {
-  id?: string;
-  colo_name?: string;
-  client_ip?: string;
-}
-
-interface TunnelSummary {
-  id: string;
-  name: string;
-  created_at: string;
-  status?: string;
-  deleted_at?: string | null;
-  connections?: TunnelConnection[];
-}
-
-interface KVNamespaceSummary {
-  id: string;
-  title: string;
-}
-
-interface KVKeySummary {
-  name: string;
-}
-
 interface ZoneSetting {
   id: string;
   value: string | number | { strict_transport_security?: { enabled?: boolean } };
 }
 
-interface R2ObjectSummary {
-  key: string;
-  size?: number;
-  uploaded?: string;
-}
-
-interface D1QueryResult {
-  results?: Array<Record<string, unknown>>;
-  result?: Array<Record<string, unknown>>;
-  meta?: {
-    duration?: number;
-    changes?: number;
-  };
-}
-
 interface FirewallRuleFilter {
   id?: string;
+  expression?: string;
 }
 
 interface FirewallRule {
   id: string;
+  action?: string;
+  description?: string;
+  expression?: string;
   paused?: boolean;
   filter?: FirewallRuleFilter;
 }
 
 interface RateLimitRule {
   id: string;
+}
+
+interface CloudflareApiError {
+  code?: number;
+  message?: string;
 }
 
 type IndexView =
@@ -324,6 +293,10 @@ const isProviderId = (value: string | null): value is ProviderId =>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function toLegacyZone(zone: ProviderZone): CloudflareZone {
@@ -403,7 +376,7 @@ interface ProviderApiEnvelope<T> {
   success?: boolean;
   result?: T;
   error?: string;
-  errors?: Array<{ code?: number; message?: string }>;
+  errors?: CloudflareApiError[];
   data?: ProviderApiEnvelope<T>;
 }
 
@@ -412,6 +385,12 @@ function unwrapProviderApiResult<T>(
 ): T | undefined {
   const envelope = response?.data ?? response;
   return envelope?.success ? envelope.result : undefined;
+}
+
+function unwrapProviderApiEnvelope<T>(
+  response: ProviderApiEnvelope<T> | null,
+): ProviderApiEnvelope<T> | undefined {
+  return response?.data ?? response ?? undefined;
 }
 
 const Index = () => {
@@ -1012,6 +991,136 @@ const Index = () => {
     }
   }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.d1]);
 
+  const resolveCloudflareAccountId = useCallback(async (): Promise<string | null> => {
+    const existingAccountId = zones[0]?.account?.id;
+    if (existingAccountId) return existingAccountId;
+
+    const credentials = getActiveCredentials();
+    if (!credentials || credentials.provider !== "cloudflare") return null;
+
+    const { data, error } = await invokeProviderApi<ProviderApiEnvelope<CloudflareZone[]>>(
+      "auto",
+      { action: "list_zones" },
+      credentials,
+    );
+    if (error) throw error;
+
+    return unwrapProviderApiResult(data)?.[0]?.account?.id ?? null;
+  }, [getActiveCredentials, zones]);
+
+  const handleRunD1Query = async () => {
+    if (!selectedD1Database) {
+      toast({
+        title: "请选择数据库",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const sql = d1SqlQuery.trim();
+    if (!sql) {
+      toast({
+        title: "请输入 SQL 查询",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const credentials = getActiveCredentials();
+    const d1Capability = provider.capabilities.d1;
+    if (!credentials || !d1Capability) {
+      toast({
+        title: "未找到凭据",
+        description: "请先登录支持 D1 的账号",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsExecutingD1Query(true);
+    setD1QueryResult(null);
+    try {
+      const result = await d1Capability.query(credentials, selectedD1Database, sql);
+      setD1QueryResult((Array.isArray(result) ? result[0] : result) as D1QueryResult);
+
+      setD1QueryHistory((previous) => {
+        const filtered = previous.filter((query) => query !== sql);
+        return [sql, ...filtered].slice(0, 50);
+      });
+      setD1SqlQuery("");
+      setD1HistoryIndex(-1);
+    } catch (error) {
+      console.error("Execute D1 query error:", error);
+      toast({
+        title: "查询失败",
+        description: error instanceof Error ? error.message : "无法执行查询",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExecutingD1Query(false);
+    }
+  };
+
+  const handleDeleteD1Database = async (databaseId: string) => {
+    const database = d1Databases.find((item) => item.uuid === databaseId);
+    if (!database) return;
+    if (!confirm(`确定要删除数据库 ${database.name} 吗？此操作不可撤销！`)) return;
+
+    const credentials = getActiveCredentials();
+    if (!credentials) {
+      toast({
+        title: "缺少凭据",
+        description: "请先登录账号",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const accountId = await resolveCloudflareAccountId();
+      if (!accountId) {
+        toast({
+          title: "无法确定账号",
+          description: "未找到可用的 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const { data, error } = await invokeProviderApi<ProviderApiEnvelope<unknown>>(
+        "auto",
+        {
+          action: "delete_d1_database",
+          accountId,
+          databaseId,
+        },
+        credentials,
+      );
+      if (error) throw error;
+
+      const envelope = unwrapProviderApiEnvelope(data);
+      if (envelope?.success) {
+        toast({
+          title: "数据库已删除",
+          description: `${database.name} 已成功删除`,
+        });
+        await loadD1Databases();
+      } else {
+        throw new Error(envelope?.errors?.[0]?.message || "删除失败");
+      }
+    } catch (error) {
+      console.error("Delete D1 database error:", error);
+      toast({
+        title: "删除失败",
+        description: error instanceof Error ? error.message : "无法删除数据库",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const loadKvNamespaces = useCallback(async () => {
     const credentials = getActiveCredentials();
     const kvCapability = provider.capabilities.kv;
@@ -1203,10 +1312,10 @@ const Index = () => {
           variant: "destructive",
         });
       }
-    } catch (e: any) {
+    } catch (e) {
       toast({
         title: "删除失败",
-        description: e.message,
+        description: errorMessage(e),
         variant: "destructive",
       });
     } finally {
@@ -1259,8 +1368,8 @@ const Index = () => {
           variant: "destructive",
         });
       }
-    } catch (e: any) {
-      toast({ title: "保存失败", description: e.message, variant: "destructive" });
+    } catch (e) {
+      toast({ title: "保存失败", description: errorMessage(e), variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -1304,8 +1413,8 @@ const Index = () => {
           variant: "destructive",
         });
       }
-    } catch (e: any) {
-      toast({ title: "读取失败", description: e.message, variant: "destructive" });
+    } catch (e) {
+      toast({ title: "读取失败", description: errorMessage(e), variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -1348,8 +1457,8 @@ const Index = () => {
           variant: "destructive",
         });
       }
-    } catch (e: any) {
-      toast({ title: "删除失败", description: e.message, variant: "destructive" });
+    } catch (e) {
+      toast({ title: "删除失败", description: errorMessage(e), variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -1397,8 +1506,8 @@ const Index = () => {
       a.remove();
       URL.revokeObjectURL(url);
       toast({ title: "导出完成", description: `共导出 ${entries.length} 个键` });
-    } catch (e: any) {
-      toast({ title: "导出失败", description: e.message, variant: "destructive" });
+    } catch (e) {
+      toast({ title: "导出失败", description: errorMessage(e), variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -1413,7 +1522,7 @@ const Index = () => {
     let entries: KvImportEntry[];
     try {
       entries = parseKvImportJson(text);
-    } catch (err: any) {
+    } catch (err) {
       const message = err instanceof Error ? err.message : "";
       if (message.includes("数组")) {
         toast({ title: "格式错误，应为数组", variant: "destructive" });
@@ -1452,8 +1561,8 @@ const Index = () => {
       });
       const j = await resp.json();
       if (j?.result) setKvKeys(j.result);
-    } catch (e: any) {
-      toast({ title: "导入失败", description: e.message, variant: "destructive" });
+    } catch (e) {
+      toast({ title: "导入失败", description: errorMessage(e), variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -1489,8 +1598,8 @@ const Index = () => {
           variant: "destructive",
         });
       }
-    } catch (e: any) {
-      toast({ title: "加载失败", description: e.message, variant: "destructive" });
+    } catch (e) {
+      toast({ title: "加载失败", description: errorMessage(e), variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -1515,8 +1624,8 @@ const Index = () => {
       setKvKeys(kvKeys.filter((i) => !selectedKvKeys.includes(i.name)));
       setSelectedKvKeys([]);
       toast({ title: "批量删除完成", description: `成功 ${ok} 个` });
-    } catch (e: any) {
-      toast({ title: "批量删除失败", description: e.message, variant: "destructive" });
+    } catch (e) {
+      toast({ title: "批量删除失败", description: errorMessage(e), variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -1542,6 +1651,93 @@ const Index = () => {
     }
   }, [getActiveCredentials, provider.capabilities.r2]);
 
+  const handleShowR2S3Config = (bucketName?: string) => {
+    if (bucketName) {
+      setSelectedR2Bucket(bucketName);
+    }
+    setShowR2S3Config(true);
+  };
+
+  const handleCopyText = (text: string) => {
+    if (!text) return;
+    void navigator.clipboard.writeText(text);
+    toast({ title: "已复制到剪贴板" });
+  };
+
+  const handleRefreshR2Files = () => {
+    setR2Files([]);
+    toast({
+      title: "请使用 S3 工具管理文件",
+      description: "当前面板仅提供 R2 bucket 与 S3 API 配置",
+    });
+  };
+
+  const handleUploadR2File = (file: File) => {
+    setUploadingFile(false);
+    toast({
+      title: "请使用 S3 工具上传文件",
+      description: `${file.name} 未上传；请使用 AWS CLI、Rclone 或 S3 SDK`,
+    });
+  };
+
+  const handleDeleteR2Bucket = async (bucketName: string) => {
+    if (!confirm(`确定要删除存储桶 ${bucketName} 吗？此操作不可撤销！`)) return;
+
+    const credentials = getActiveCredentials();
+    if (!credentials) {
+      toast({
+        title: "缺少凭据",
+        description: "请先登录账号",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const accountId = await resolveCloudflareAccountId();
+      if (!accountId) {
+        toast({
+          title: "无法确定账号",
+          description: "未找到可用的 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const { data, error } = await invokeProviderApi<ProviderApiEnvelope<unknown>>(
+        "auto",
+        {
+          action: "delete_r2_bucket",
+          accountId,
+          bucketName,
+        },
+        credentials,
+      );
+      if (error) throw error;
+
+      const envelope = unwrapProviderApiEnvelope(data);
+      if (envelope?.success) {
+        toast({
+          title: "存储桶已删除",
+          description: `${bucketName} 已成功删除`,
+        });
+        await loadR2Buckets();
+      } else {
+        throw new Error(envelope?.errors?.[0]?.message || "删除失败");
+      }
+    } catch (error) {
+      console.error("Delete R2 bucket error:", error);
+      toast({
+        title: "删除失败",
+        description: error instanceof Error ? error.message : "无法删除存储桶",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const loadTunnels = useCallback(async () => {
     const credentials = getActiveCredentials();
     const tunnelsCapability = provider.capabilities.tunnels;
@@ -1558,6 +1754,101 @@ const Index = () => {
       setIsLoading(false);
     }
   }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.tunnels]);
+
+  const getTunnelById = (tunnelId: string): TunnelSummary | undefined =>
+    tunnels.find((tunnel) => tunnel.id === tunnelId);
+
+  const handleEditTunnel = (tunnelId: string) => {
+    const tunnel = getTunnelById(tunnelId);
+    if (!tunnel) return;
+    setSelectedTunnel(tunnel);
+    setEditTunnelOpen(true);
+  };
+
+  const handleTunnelConfig = (tunnelId: string) => {
+    const tunnel = getTunnelById(tunnelId);
+    if (!tunnel) return;
+    setSelectedTunnel(tunnel);
+    setTunnelConfigOpen(true);
+  };
+
+  const handleTunnelRoute = (tunnelId: string) => {
+    const tunnel = getTunnelById(tunnelId);
+    if (!tunnel) return;
+    setSelectedTunnel(tunnel);
+    setTunnelRouteOpen(true);
+  };
+
+  const handleDeleteTunnel = async (tunnelId: string) => {
+    const tunnel = getTunnelById(tunnelId);
+    if (!tunnel) return;
+
+    const activeConnections = tunnel.connections?.length ?? 0;
+    if (activeConnections > 0) {
+      toast({
+        title: "无法删除",
+        description: `Tunnel ${tunnel.name} 有 ${activeConnections} 个活跃连接。请先断开所有连接后再删除。`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!confirm(`确定要删除 Tunnel ${tunnel.name} 吗？此操作不可撤销！`)) return;
+
+    const credentials = getActiveCredentials();
+    if (!credentials) {
+      toast({
+        title: "缺少凭据",
+        description: "请先登录账号",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const accountId = await resolveCloudflareAccountId();
+      if (!accountId) {
+        toast({
+          title: "无法确定账号",
+          description: "未找到可用的 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const { data, error } = await invokeProviderApi<ProviderApiEnvelope<unknown>>(
+        "auto",
+        {
+          action: "delete_tunnel",
+          accountId,
+          tunnelId,
+        },
+        credentials,
+      );
+      if (error) throw error;
+
+      const envelope = unwrapProviderApiEnvelope(data);
+      if (envelope?.success) {
+        toast({
+          title: "Tunnel 已删除",
+          description: `${tunnel.name} 已成功删除`,
+        });
+        await loadTunnels();
+      } else {
+        throw new Error(envelope?.errors?.[0]?.message || "删除失败");
+      }
+    } catch (error) {
+      console.error("Delete tunnel error:", error);
+      toast({
+        title: "删除失败",
+        description: error instanceof Error ? error.message : "请确保 Tunnel 没有活跃连接和关联的路由",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const loadCertificates = useCallback(async () => {
     const credentials = getActiveCredentials();
@@ -1676,7 +1967,6 @@ const Index = () => {
 
       // 更新状态
       setSavedAccounts(getAllAccounts());
-      setCloudflareCredentials(useEmail, useApiKey);
       setHasCredentials(true);
       setCfEmail(useEmail);
       setCfApiKey(useApiKey);
@@ -1718,8 +2008,6 @@ const Index = () => {
     setCurrentAccountId(accountId);
     setCfEmail(account.email);
     setCfApiKey(account.apiKey);
-    setCloudflareCredentials(account.email, account.apiKey);
-
     // 回到域名管理视图（等同用户点击“域名管理”）
     setActiveView("zones");
 
@@ -1883,7 +2171,6 @@ const Index = () => {
 
       setCfEmail(oldEmail);
       setCfApiKey(oldApiKey);
-      setCloudflareCredentials(oldEmail, oldApiKey);
       setHasCredentials(true);
 
       setSavedAccounts([...accounts, migratedAccount]);
@@ -1914,13 +2201,8 @@ const Index = () => {
       // 使用保存的当前账号
       setCfEmail(currentAcc.email);
       setCfApiKey(currentAcc.apiKey);
-      setCloudflareCredentials(currentAcc.email, currentAcc.apiKey);
       setHasCredentials(true);
       setCurrentAccountId(currentAcc.id);
-
-      // 同时设置 cookie，确保删除等功能可用
-      setCookie("cf_email", currentAcc.email, 30);
-      setCookie("cf_api_key", currentAcc.apiKey, 30);
 
       setTimeout(() => loadZones({ email: currentAcc.email, apiKey: currentAcc.apiKey }), 100);
       void loadWorkersHiddenSetting();
@@ -2163,11 +2445,11 @@ const Index = () => {
       } else {
         throw new Error(data.errors?.[0]?.message || "更新失败");
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error("Update always online error:", error);
       toast({
         title: "更新失败",
-        description: error.message,
+        description: errorMessage(error),
         variant: "destructive",
       });
     } finally {
@@ -2522,7 +2804,7 @@ const Index = () => {
     }
   };
 
-  const toggleFirewallRule = async (rule: any) => {
+  const toggleFirewallRule = async (rule: FirewallRule) => {
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     if (!email || !apiKey || !selectedZone) return;
@@ -3097,7 +3379,7 @@ const Index = () => {
         throw new Error("无法获取域名列表");
       }
 
-      const matchedZone = zonesData.result.find((zone: any) => domainName.endsWith(zone.name));
+      const matchedZone = (zonesData.result as CloudflareZone[]).find((zone) => domainName.endsWith(zone.name));
 
       if (matchedZone) {
         const zoneId = matchedZone.id;
@@ -3174,7 +3456,7 @@ const Index = () => {
       if (error) throw error;
 
       // 如果 Worker 不存在（错误代码 10007），也认为删除成功
-      const workerNotFound = data?.errors?.some((e: any) => e.code === 10007);
+      const workerNotFound = data?.errors?.some((e: CloudflareApiError) => e.code === 10007);
 
       if (data.success || workerNotFound) {
         toast({
@@ -5958,1033 +6240,66 @@ const Index = () => {
 
             {/* D1 数据库管理 */}
             {activeView === "d1-database" && (
-              <div className="max-w-7xl mx-auto space-y-4">
-                <Card className="shadow-card">
-                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-                    <div>
-                      <CardTitle>D1 SQL 数据库</CardTitle>
-                      <CardDescription>管理您的 Cloudflare D1 数据库实例</CardDescription>
-                    </div>
-                    <Button
-                      onClick={() => setShowCreateD1DatabaseForm(true)}
-                      disabled={isLoading || zones.length === 0}
-                    >
-                      <Database className="w-4 h-4 mr-2" />
-                      创建数据库
-                    </Button>
-                  </CardHeader>
-                  <CardContent>
-                    {d1Databases.length === 0 ? (
-                      <div className="text-center py-12">
-                        <Database className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                        <p className="text-muted-foreground">暂无 D1 数据库</p>
-                        <p className="text-xs text-muted-foreground mt-2">请前往 Cloudflare 控制台创建 D1 数据库</p>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-2">
-                        {d1Databases.map((db: any) => (
-                          <div
-                            key={db.uuid}
-                            className="p-2 border border-border/50 rounded-lg hover:bg-muted/30 transition-colors"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 text-sm">
-                                  <h3 className="font-medium truncate">{db.name}</h3>
-                                  <span className="text-xs text-muted-foreground whitespace-nowrap">
-                                    {new Date(db.created_at).toLocaleDateString("zh-CN")}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                                  <span className="truncate">UUID: {db.uuid}</span>
-                                  <span className="whitespace-nowrap">版本: {db.version || "N/A"}</span>
-                                </div>
-                              </div>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={async () => {
-                                  if (!confirm(`确定要删除数据库 ${db.name} 吗？此操作不可撤销！`)) return;
-
-                                  const currentAcc = getCurrentAccount();
-                                  const email = getCookie("cf_email") || cfEmail || currentAcc?.email;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey || currentAcc?.apiKey;
-                                  if (!email || !apiKey) {
-                                    toast({
-                                      title: "缺少凭据",
-                                      description: "请先在上方输入 Cloudflare 邮箱和 API Key",
-                                      variant: "destructive",
-                                    });
-                                    return;
-                                  }
-
-                                  setIsLoading(true);
-                                  try {
-                                    // 获取 accountId（优先用现有 zones，其次调用 API 获取）
-                                    let accountId = zones[0]?.account?.id as string | undefined;
-                                    if (!accountId) {
-                                      const { data: zonesData, error: zonesErr } = await invokeWorkerApi<any>(
-                                        "cloudflare-api",
-                                        {
-                                          action: "list_zones",
-                                          email,
-                                          apiKey,
-                                        },
-                                      );
-                                      if (zonesErr) throw zonesErr;
-                                      accountId = zonesData?.result?.[0]?.account?.id;
-                                    }
-                                    if (!accountId) {
-                                      toast({
-                                        title: "无法确定账号",
-                                        description: "未找到可用的 Cloudflare 账号",
-                                        variant: "destructive",
-                                      });
-                                      return;
-                                    }
-
-                                    const { data, error } = await invokeWorkerApi<any>("cloudflare-api", {
-                                      action: "delete_d1_database",
-                                      email,
-                                      apiKey,
-                                      accountId,
-                                      databaseId: db.uuid,
-                                    });
-
-                                    if (error) throw error;
-
-                                    if (data?.success) {
-                                      toast({
-                                        title: "数据库已删除",
-                                        description: `${db.name} 已成功删除`,
-                                      });
-                                      loadD1Databases();
-                                    } else {
-                                      throw new Error(data?.errors?.[0]?.message || "删除失败");
-                                    }
-                                  } catch (error) {
-                                    console.error("Delete D1 database error:", error);
-                                    toast({
-                                      title: "删除失败",
-                                      description: error instanceof Error ? error.message : "无法删除数据库",
-                                      variant: "destructive",
-                                    });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                                disabled={isLoading}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {/* SQL 控制台 */}
-                {d1Databases.length > 0 && (
-                  <Card className="shadow-card">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Database className="w-5 h-5" />
-                        SQL 控制台
-                      </CardTitle>
-                      <CardDescription>在选定的数据库中执行 SQL 查询</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div>
-                        <Label htmlFor="d1-select">选择数据库</Label>
-                        <select
-                          id="d1-select"
-                          className="w-full mt-1.5 px-3 py-2 border border-border rounded-md bg-background"
-                          value={selectedD1Database}
-                          onChange={(e) => setSelectedD1Database(e.target.value)}
-                        >
-                          <option value="">-- 选择数据库 --</option>
-                          {d1Databases.map((db: any) => (
-                            <option key={db.uuid} value={db.uuid}>
-                              {db.name} ({db.uuid})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <div className="mb-2">
-                          <Label htmlFor="d1-sql">SQL 查询</Label>
-                          <div className="flex flex-wrap items-center gap-2 mt-2">
-                            <span className="text-xs text-muted-foreground">查询:</span>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => setD1SqlQuery("SELECT * FROM sqlite_master WHERE type='table';")}
-                            >
-                              查看表
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => {
-                                const tableName = prompt("请输入表名:");
-                                if (tableName) {
-                                  setD1SqlQuery(`SELECT * FROM ${tableName} LIMIT 10;`);
-                                }
-                              }}
-                            >
-                              查询数据
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => {
-                                const tableName = prompt("请输入表名:");
-                                if (tableName) {
-                                  setD1SqlQuery(`PRAGMA table_info(${tableName});`);
-                                }
-                              }}
-                            >
-                              表结构
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => {
-                                const tableName = prompt("请输入表名:");
-                                if (tableName) {
-                                  setD1SqlQuery(`SELECT COUNT(*) as total FROM ${tableName};`);
-                                }
-                              }}
-                            >
-                              统计记录
-                            </Button>
-                            <span className="text-xs text-muted-foreground ml-2">操作:</span>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => {
-                                const tableName = prompt("请输入表名:");
-                                if (tableName) {
-                                  setD1SqlQuery(
-                                    `INSERT INTO ${tableName} (column1, column2) VALUES ('value1', 'value2');`,
-                                  );
-                                }
-                              }}
-                            >
-                              插入数据
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => {
-                                const tableName = prompt("请输入表名:");
-                                if (tableName) {
-                                  setD1SqlQuery(`UPDATE ${tableName} SET column1 = 'new_value' WHERE id = 1;`);
-                                }
-                              }}
-                            >
-                              更新数据
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => {
-                                const tableName = prompt("请输入表名:");
-                                if (tableName) {
-                                  setD1SqlQuery(`DELETE FROM ${tableName} WHERE id = 1;`);
-                                }
-                              }}
-                            >
-                              删除数据
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => {
-                                const tableName = prompt("请输入表名:");
-                                if (tableName) {
-                                  setD1SqlQuery(
-                                    `CREATE TABLE ${tableName} (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  name TEXT NOT NULL,\n  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);`,
-                                  );
-                                }
-                              }}
-                            >
-                              创建表
-                            </Button>
-                          </div>
-                        </div>
-                        <textarea
-                          id="d1-sql"
-                          className="w-full mt-1.5 px-3 py-2 border border-border rounded-md bg-background font-mono text-sm min-h-[80px]"
-                          value={d1SqlQuery}
-                          onChange={(e) => {
-                            setD1SqlQuery(e.target.value);
-                            setD1HistoryIndex(-1); // 重置历史索引
-                          }}
-                          onKeyDown={(e) => {
-                            // 处理方向键导航历史命令
-                            if (e.key === "ArrowUp") {
-                              e.preventDefault();
-                              if (d1QueryHistory.length > 0) {
-                                const newIndex =
-                                  d1HistoryIndex < d1QueryHistory.length - 1 ? d1HistoryIndex + 1 : d1HistoryIndex;
-                                setD1HistoryIndex(newIndex);
-                                setD1SqlQuery(d1QueryHistory[newIndex]);
-                              }
-                            } else if (e.key === "ArrowDown") {
-                              e.preventDefault();
-                              if (d1HistoryIndex > 0) {
-                                const newIndex = d1HistoryIndex - 1;
-                                setD1HistoryIndex(newIndex);
-                                setD1SqlQuery(d1QueryHistory[newIndex]);
-                              } else if (d1HistoryIndex === 0) {
-                                setD1HistoryIndex(-1);
-                                setD1SqlQuery("");
-                              }
-                            }
-                          }}
-                          placeholder="SELECT * FROM table_name LIMIT 10;"
-                        />
-                        {d1QueryHistory.length > 0 && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            提示: 使用 ↑↓ 方向键浏览历史命令 ({d1QueryHistory.length} 条)
-                          </p>
-                        )}
-                      </div>
-
-                      <Button
-                        onClick={async () => {
-                          if (!selectedD1Database) {
-                            toast({
-                              title: "请选择数据库",
-                              variant: "destructive",
-                            });
-                            return;
-                          }
-
-                          if (!d1SqlQuery.trim()) {
-                            toast({
-                              title: "请输入 SQL 查询",
-                              variant: "destructive",
-                            });
-                            return;
-                          }
-
-                          const email = getCookie("cf_email") || cfEmail;
-                          const apiKey = getCookie("cf_api_key") || cfApiKey;
-                          if (!email || !apiKey) {
-                            toast({
-                              title: "未找到凭据",
-                              description: "请先登录 Cloudflare 账号",
-                              variant: "destructive",
-                            });
-                            return;
-                          }
-
-                          if (zones.length === 0) {
-                            toast({
-                              title: "未找到域名",
-                              description: "请先添加 Cloudflare 域名",
-                              variant: "destructive",
-                            });
-                            return;
-                          }
-
-                          const accountId = zones[0]?.account?.id;
-                          if (!accountId) {
-                            toast({
-                              title: "未找到账户 ID",
-                              description: "无法获取 Cloudflare 账户信息",
-                              variant: "destructive",
-                            });
-                            return;
-                          }
-
-                          setIsExecutingD1Query(true);
-                          setD1QueryResult(null);
-
-                          try {
-                            const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                              body: {
-                                action: "execute_d1_query",
-                                email,
-                                apiKey,
-                                accountId,
-                                databaseId: selectedD1Database,
-                                sql: d1SqlQuery.trim(),
-                              },
-                            });
-
-                            if (error) throw error;
-
-                            if (data.success) {
-                              setD1QueryResult(data.result[0]);
-
-                              // 添加到历史记录（去重，最新的在前）
-                              const currentQuery = d1SqlQuery.trim();
-                              setD1QueryHistory((prev) => {
-                                const filtered = prev.filter((q) => q !== currentQuery);
-                                return [currentQuery, ...filtered].slice(0, 50); // 最多保留50条
-                              });
-
-                              // 清空查询框
-                              setD1SqlQuery("");
-                              setD1HistoryIndex(-1);
-
-                              // 不显示成功提示
-                            } else {
-                              throw new Error(data.errors?.[0]?.message || "查询失败");
-                            }
-                          } catch (error) {
-                            console.error("Execute D1 query error:", error);
-                            toast({
-                              title: "查询失败",
-                              description: error instanceof Error ? error.message : "无法执行查询",
-                              variant: "destructive",
-                            });
-                          } finally {
-                            setIsExecutingD1Query(false);
-                          }
-                        }}
-                        disabled={isExecutingD1Query || !selectedD1Database || !d1SqlQuery.trim()}
-                        className="w-full"
-                      >
-                        {isExecutingD1Query ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            执行中...
-                          </>
-                        ) : (
-                          "执行查询"
-                        )}
-                      </Button>
-
-                      {/* 查询结果显示 - 固定显示框 */}
-                      <div
-                        className="border border-border rounded-lg overflow-hidden bg-muted/10"
-                        style={{ height: "300px" }}
-                      >
-                        {d1QueryResult ? (
-                          <>
-                            <div className="bg-muted px-4 py-2 border-b border-border">
-                              <p className="text-sm font-medium">
-                                查询结果 ({d1QueryResult.results?.length || 0} 条记录)
-                              </p>
-                              {d1QueryResult.meta && (
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  执行时间: {d1QueryResult.meta.duration}ms | 影响行数:{" "}
-                                  {d1QueryResult.meta.changes || 0}
-                                </p>
-                              )}
-                            </div>
-
-                            {d1QueryResult.results && d1QueryResult.results.length > 0 ? (
-                              <div className="overflow-auto" style={{ height: "calc(300px - 52px)" }}>
-                                <table className="w-full text-sm">
-                                  <thead className="bg-muted/50 sticky top-0">
-                                    <tr>
-                                      {Object.keys(d1QueryResult.results[0]).map((column) => (
-                                        <th
-                                          key={column}
-                                          className="px-4 py-2 text-left font-medium border-b border-border"
-                                        >
-                                          {column}
-                                        </th>
-                                      ))}
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {d1QueryResult.results.map((row: any, index: number) => (
-                                      <tr key={index} className="hover:bg-muted/30 transition-colors">
-                                        {Object.values(row).map((value: any, colIndex: number) => (
-                                          <td key={colIndex} className="px-4 py-2 border-b border-border/50">
-                                            {value === null ? (
-                                              <span className="text-muted-foreground italic">null</span>
-                                            ) : typeof value === "object" ? (
-                                              <code className="text-xs">{JSON.stringify(value)}</code>
-                                            ) : (
-                                              String(value)
-                                            )}
-                                          </td>
-                                        ))}
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            ) : (
-                              <div className="px-4 py-8 text-center text-muted-foreground">
-                                查询执行成功，但没有返回结果
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <div className="h-full flex items-center justify-center text-muted-foreground">
-                            <div className="text-center">
-                              <Database className="w-12 h-12 mx-auto mb-2 opacity-30" />
-                              <p className="text-sm">查询结果将在此处显示</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
+              <D1DatabaseView
+                databases={d1Databases}
+                selectedDatabase={selectedD1Database}
+                sqlQuery={d1SqlQuery}
+                queryHistory={d1QueryHistory}
+                historyIndex={d1HistoryIndex}
+                queryResult={d1QueryResult}
+                isLoading={isLoading}
+                isExecutingQuery={isExecutingD1Query}
+                canCreate={zones.length > 0}
+                onSelectDatabase={setSelectedD1Database}
+                onSqlQueryChange={setD1SqlQuery}
+                onHistoryIndexChange={setD1HistoryIndex}
+                onRunQuery={handleRunD1Query}
+                onRefresh={loadD1Databases}
+                onOpenCreateDialog={() => setShowCreateD1DatabaseForm(true)}
+                onDeleteDatabase={handleDeleteD1Database}
+              />
             )}
 
             {/* R2 存储桶管理 */}
             {activeView === "r2-storage" && (
-              <div className="max-w-7xl mx-auto space-y-4">
-                <Card className="shadow-card">
-                  <CardHeader>
-                    <CardTitle>R2 对象存储</CardTitle>
-                    <CardDescription>管理您的 Cloudflare R2 存储桶</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {r2Error ? (
-                      <div className="text-center py-12">
-                        <HardDrive className="w-12 h-12 mx-auto text-destructive mb-4" />
-                        <p className="font-medium text-destructive mb-2">无法加载 R2 存储桶</p>
-                        <p className="text-sm text-muted-foreground mb-4">{r2Error}</p>
-                        {r2Error.includes("enable R2") && (
-                          <p className="text-xs text-muted-foreground">请前往 Cloudflare 控制台启用 R2 服务</p>
-                        )}
-                      </div>
-                    ) : !Array.isArray(r2Buckets) || r2Buckets.length === 0 ? (
-                      <div className="text-center py-12">
-                        <HardDrive className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                        <p className="text-muted-foreground">暂无 R2 存储桶</p>
-                        <p className="text-xs text-muted-foreground mt-2">请前往 Cloudflare 控制台创建 R2 存储桶</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {r2Buckets.map((bucket: any) => (
-                          <div
-                            key={bucket.name}
-                            className="p-4 border border-border/50 rounded-lg hover:bg-muted/30 transition-colors"
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="flex-1">
-                                <h3 className="font-medium">{bucket.name}</h3>
-                                <div className="flex gap-4 mt-2 text-sm text-muted-foreground">
-                                  <span>位置: {bucket.location || "Auto"}</span>
-                                  <span>创建时间: {new Date(bucket.creation_date).toLocaleString("zh-CN")}</span>
-                                </div>
-                              </div>
-                              <div className="flex gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => {
-                                    setSelectedR2Bucket(bucket.name);
-                                    setShowR2S3Config(true);
-                                  }}
-                                >
-                                  <Key className="w-4 h-4 mr-1" />
-                                  S3 API
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => {
-                                    setSelectedR2Bucket(bucket.name);
-                                  }}
-                                >
-                                  <Folder className="w-4 h-4 mr-1" />
-                                  浏览文件
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={async () => {
-                                    if (!confirm(`确定要删除存储桶 ${bucket.name} 吗？此操作不可撤销！`)) return;
-
-                                    const email = getCookie("cf_email");
-                                    const apiKey = getCookie("cf_api_key");
-                                    if (!email || !apiKey || zones.length === 0) return;
-
-                                    const accountId = zones[0]?.account?.id;
-                                    if (!accountId) return;
-
-                                    setIsLoading(true);
-                                    try {
-                                      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                        body: {
-                                          action: "delete_r2_bucket",
-                                          email,
-                                          apiKey,
-                                          accountId,
-                                          bucketName: bucket.name,
-                                        },
-                                      });
-
-                                      if (error) throw error;
-
-                                      if (data.success) {
-                                        toast({
-                                          title: "存储桶已删除",
-                                          description: `${bucket.name} 已成功删除`,
-                                        });
-                                        loadR2Buckets();
-                                      } else {
-                                        throw new Error(data.errors?.[0]?.message || "删除失败");
-                                      }
-                                    } catch (error) {
-                                      console.error("Delete R2 bucket error:", error);
-                                      toast({
-                                        title: "删除失败",
-                                        description: error instanceof Error ? error.message : "无法删除存储桶",
-                                        variant: "destructive",
-                                      });
-                                    } finally {
-                                      setIsLoading(false);
-                                    }
-                                  }}
-                                  disabled={isLoading}
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {/* S3 API 配置对话框 */}
-                {showR2S3Config && selectedR2Bucket && (
-                  <Card className="shadow-card">
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <CardTitle className="flex items-center gap-2">
-                            <Key className="w-5 h-5" />
-                            S3 API 配置
-                          </CardTitle>
-                          <CardDescription>{selectedR2Bucket} 的 S3 兼容 API 配置</CardDescription>
-                        </div>
-                        <Button variant="ghost" size="sm" onClick={() => setShowR2S3Config(false)}>
-                          <X className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="bg-muted p-4 rounded-lg space-y-3">
-                        <div>
-                          <Label className="text-xs font-semibold">Endpoint URL</Label>
-                          <div className="flex gap-2 mt-1">
-                            <Input
-                              value={`https://${zones[0]?.account?.id}.r2.cloudflarestorage.com`}
-                              readOnly
-                              className="font-mono text-sm"
-                            />
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => {
-                                navigator.clipboard.writeText(
-                                  `https://${zones[0]?.account?.id}.r2.cloudflarestorage.com`,
-                                );
-                                toast({ title: "已复制到剪贴板" });
-                              }}
-                            >
-                              <Copy className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </div>
-
-                        <div>
-                          <Label className="text-xs font-semibold">Bucket Name</Label>
-                          <div className="flex gap-2 mt-1">
-                            <Input value={selectedR2Bucket} readOnly className="font-mono text-sm" />
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => {
-                                navigator.clipboard.writeText(selectedR2Bucket);
-                                toast({ title: "已复制到剪贴板" });
-                              }}
-                            >
-                              <Copy className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </div>
-
-                        <div>
-                          <Label className="text-xs font-semibold">Region</Label>
-                          <div className="flex gap-2 mt-1">
-                            <Input value="auto" readOnly className="font-mono text-sm" />
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => {
-                                navigator.clipboard.writeText("auto");
-                                toast({ title: "已复制到剪贴板" });
-                              }}
-                            >
-                              <Copy className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </div>
-
-                        <div className="pt-2 border-t border-border">
-                          <p className="text-xs text-muted-foreground mb-2">
-                            ⚠️ Access Key ID 和 Secret Access Key 需要在 Cloudflare 控制台创建
-                          </p>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              window.open(
-                                `https://dash.cloudflare.com/${zones[0]?.account?.id}/r2/api-tokens`,
-                                "_blank",
-                              )
-                            }
-                          >
-                            前往创建 R2 API 令牌
-                          </Button>
-                        </div>
-
-                        <Button
-                          className="w-full"
-                          onClick={() => {
-                            const config = `Endpoint: https://${zones[0]?.account?.id}.r2.cloudflarestorage.com\nBucket: ${selectedR2Bucket}\nRegion: auto`;
-                            navigator.clipboard.writeText(config);
-                            toast({ title: "S3 配置已复制" });
-                          }}
-                        >
-                          <Copy className="w-4 h-4 mr-2" />
-                          一键复制所有配置
-                        </Button>
-                      </div>
-
-                      <div className="bg-primary/5 p-4 rounded-lg space-y-2">
-                        <h4 className="text-sm font-semibold">使用示例 (AWS CLI)</h4>
-                        <pre className="text-xs bg-background p-3 rounded border border-border overflow-x-auto">
-                          {`aws s3 ls s3://${selectedR2Bucket} \\
-  --endpoint-url https://${zones[0]?.account?.id}.r2.cloudflarestorage.com \\
-  --region auto`}
-                        </pre>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            navigator.clipboard.writeText(
-                              `aws s3 ls s3://${selectedR2Bucket} --endpoint-url https://${zones[0]?.account?.id}.r2.cloudflarestorage.com --region auto`,
-                            );
-                            toast({ title: "命令已复制" });
-                          }}
-                        >
-                          <Copy className="w-3 h-3 mr-1" />
-                          复制命令
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* 文件浏览器 */}
-                {selectedR2Bucket && !showR2S3Config && (
-                  <Card className="shadow-card">
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <CardTitle className="flex items-center gap-2">
-                            <Folder className="w-5 h-5" />
-                            {selectedR2Bucket} - 文件列表
-                          </CardTitle>
-                          <CardDescription>使用 S3 CLI 或 SDK 上传和管理文件</CardDescription>
-                        </div>
-                        <Button variant="ghost" size="sm" onClick={() => setSelectedR2Bucket("")}>
-                          <X className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-center py-12 space-y-4">
-                        <FileText className="w-12 h-12 mx-auto text-muted-foreground" />
-                        <div>
-                          <p className="text-muted-foreground mb-2">R2 文件管理需要使用 S3 兼容工具</p>
-                          <p className="text-sm text-muted-foreground mb-4">推荐使用 AWS CLI、Rclone 或其他 S3 工具</p>
-                        </div>
-                        <div className="flex gap-2 justify-center">
-                          <Button
-                            variant="outline"
-                            onClick={() => {
-                              setShowR2S3Config(true);
-                            }}
-                          >
-                            <Key className="w-4 h-4 mr-2" />
-                            查看 S3 API 配置
-                          </Button>
-                          <Button
-                            variant="outline"
-                            onClick={() => window.open("https://developers.cloudflare.com/r2/examples/", "_blank")}
-                          >
-                            <FileText className="w-4 h-4 mr-2" />
-                            查看使用示例
-                          </Button>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
+              <R2StorageView
+                buckets={Array.isArray(r2Buckets) ? r2Buckets : []}
+                selectedBucket={selectedR2Bucket}
+                files={r2Files}
+                error={r2Error}
+                isLoading={isLoading}
+                isLoadingFiles={isLoadingR2Files}
+                isUploading={uploadingFile}
+                showS3Config={showR2S3Config}
+                accountId={zones[0]?.account?.id}
+                onSelectBucket={(bucketName) => {
+                  setSelectedR2Bucket(bucketName);
+                  setShowR2S3Config(false);
+                }}
+                onShowS3Config={handleShowR2S3Config}
+                onCloseS3Config={() => setShowR2S3Config(false)}
+                onRefreshBuckets={loadR2Buckets}
+                onRefreshFiles={handleRefreshR2Files}
+                onUploadFile={handleUploadR2File}
+                onDeleteBucket={handleDeleteR2Bucket}
+                onOpenExamples={() => window.open("https://developers.cloudflare.com/r2/examples/", "_blank")}
+                onCopy={handleCopyText}
+              />
             )}
 
             {/* Cloudflare Tunnels 管理 */}
             {activeView === "tunnels" && (
-              <div className="max-w-7xl mx-auto space-y-4">
-                <Card className="shadow-card">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle>Cloudflare Tunnels</CardTitle>
-                        <CardDescription>管理您的 Cloudflare Tunnel 连接</CardDescription>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          onClick={() => loadTunnels()}
-                          disabled={isLoading || zones.length === 0}
-                        >
-                          <Loader2 className={`w-4 h-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
-                          刷新
-                        </Button>
-                        <Button
-                          onClick={() => setCreateTunnelOpen(true)}
-                          disabled={isLoading || zones.length === 0}
-                          variant="outline"
-                        >
-                          <Network className="w-4 h-4 mr-2" />
-                          创建说明
-                        </Button>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    {isLoading && tunnels.length === 0 ? (
-                      <div className="text-center py-12">
-                        <Loader2 className="w-8 h-8 mx-auto text-muted-foreground mb-4 animate-spin" />
-                        <p className="text-muted-foreground">正在加载 Tunnel 列表...</p>
-                      </div>
-                    ) : tunnels.length === 0 ? (
-                      <div className="text-center py-12">
-                        <Network className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                        <p className="text-muted-foreground">暂无 Tunnel</p>
-                        <p className="text-xs text-muted-foreground mt-2">
-                          点击上方"创建说明"按钮查看如何在 Cloudflare Dashboard 创建 Tunnel
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {tunnels.map((tunnel: any) => {
-                          const hasConnections = tunnel.connections && tunnel.connections.length > 0;
-                          const status = tunnel.status || (hasConnections ? "healthy" : "inactive");
-
-                          return (
-                            <div
-                              key={tunnel.id}
-                              className="p-4 border border-border/50 rounded-lg hover:bg-muted/30 transition-colors"
-                            >
-                              <div className="flex items-start justify-between gap-4">
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-3 mb-2">
-                                    <h3 className="font-medium truncate">{tunnel.name}</h3>
-                                    {/* 状态徽章 */}
-                                    {status === "healthy" && (
-                                      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-green-500/10 text-green-600 text-xs font-medium">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-green-600 mr-1.5"></span>
-                                        活跃
-                                      </span>
-                                    )}
-                                    {status === "down" && (
-                                      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-red-500/10 text-red-600 text-xs font-medium">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-red-600 mr-1.5"></span>
-                                        离线
-                                      </span>
-                                    )}
-                                    {status === "degraded" && (
-                                      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-yellow-500/10 text-yellow-600 text-xs font-medium">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-yellow-600 mr-1.5"></span>
-                                        降级
-                                      </span>
-                                    )}
-                                    {status === "inactive" && (
-                                      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-gray-500/10 text-gray-600 text-xs font-medium">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-gray-600 mr-1.5"></span>
-                                        未连接
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-muted-foreground">
-                                    <div className="flex items-center gap-1.5">
-                                      <Key className="w-3.5 h-3.5" />
-                                      <span className="truncate">ID: {tunnel.id}</span>
-                                    </div>
-                                    <div className="flex items-center gap-1.5">
-                                      <Settings className="w-3.5 h-3.5" />
-                                      <span>创建: {new Date(tunnel.created_at).toLocaleString("zh-CN")}</span>
-                                    </div>
-                                  </div>
-
-                                  {/* 连接信息 */}
-                                  {hasConnections && (
-                                    <div className="mt-3 p-2 bg-muted/50 rounded-md">
-                                      <div className="flex items-center gap-2 text-sm">
-                                        <Network className="w-4 h-4 text-green-600" />
-                                        <span className="font-medium text-green-600">
-                                          {tunnel.connections.length} 个活跃连接
-                                        </span>
-                                      </div>
-                                      {tunnel.connections.slice(0, 2).map((conn: any, idx: number) => (
-                                        <div
-                                          key={conn.id || `conn-${idx}`}
-                                          className="mt-1.5 text-xs text-muted-foreground pl-6"
-                                        >
-                                          <div className="flex items-center gap-2">
-                                            <span>• {conn.colo_name || conn.id}</span>
-                                            {conn.client_ip && (
-                                              <span className="text-xs opacity-70">({conn.client_ip})</span>
-                                            )}
-                                          </div>
-                                        </div>
-                                      ))}
-                                      {tunnel.connections.length > 2 && (
-                                        <div className="text-xs text-muted-foreground pl-6 mt-1">
-                                          还有 {tunnel.connections.length - 2} 个连接...
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* 操作按钮 */}
-                                <div className="flex items-center gap-2 flex-shrink-0">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => {
-                                      setSelectedTunnel(tunnel);
-                                      setTunnelRouteOpen(true);
-                                    }}
-                                    disabled={isLoading}
-                                  >
-                                    <Globe className="w-4 h-4 mr-1.5" />
-                                    路由
-                                  </Button>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => {
-                                      setSelectedTunnel(tunnel);
-                                      setTunnelConfigOpen(true);
-                                    }}
-                                    disabled={isLoading}
-                                  >
-                                    <FileText className="w-4 h-4 mr-1.5" />
-                                    配置
-                                  </Button>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => {
-                                      setSelectedTunnel(tunnel);
-                                      setEditTunnelOpen(true);
-                                    }}
-                                    disabled={isLoading}
-                                  >
-                                    <Edit className="w-4 h-4" />
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={async () => {
-                                      // 检查是否有活跃连接
-                                      const hasActiveConnections = tunnel.connections && tunnel.connections.length > 0;
-
-                                      if (hasActiveConnections) {
-                                        toast({
-                                          title: "无法删除",
-                                          description: `Tunnel ${tunnel.name} 有 ${tunnel.connections.length} 个活跃连接。请先断开所有连接后再删除。`,
-                                          variant: "destructive",
-                                        });
-                                        return;
-                                      }
-
-                                      if (!confirm(`确定要删除 Tunnel ${tunnel.name} 吗？此操作不可撤销！`)) return;
-
-                                      const email = getCookie("cf_email");
-                                      const apiKey = getCookie("cf_api_key");
-                                      if (!email || !apiKey || zones.length === 0) return;
-
-                                      const accountId = zones[0]?.account?.id;
-                                      if (!accountId) return;
-
-                                      setIsLoading(true);
-                                      try {
-                                        const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                          body: {
-                                            action: "delete_tunnel",
-                                            email,
-                                            apiKey,
-                                            accountId,
-                                            tunnelId: tunnel.id,
-                                          },
-                                        });
-
-                                        if (error) throw error;
-
-                                        if (data.success) {
-                                          toast({
-                                            title: "Tunnel 已删除",
-                                            description: `${tunnel.name} 已成功删除`,
-                                          });
-                                          loadTunnels();
-                                        } else {
-                                          const errorMsg = data.errors?.[0]?.message || "删除失败";
-                                          throw new Error(errorMsg);
-                                        }
-                                      } catch (error: any) {
-                                        console.error("Delete tunnel error:", error);
-                                        toast({
-                                          title: "删除失败",
-                                          description: error.message || "请确保 Tunnel 没有活跃连接和关联的路由",
-                                          variant: "destructive",
-                                        });
-                                      } finally {
-                                        setIsLoading(false);
-                                      }
-                                    }}
-                                    disabled={isLoading}
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
+              <TunnelsView
+                tunnels={tunnels}
+                isLoading={isLoading}
+                canManage={zones.length > 0}
+                onRefresh={loadTunnels}
+                onCreate={() => setCreateTunnelOpen(true)}
+                onEdit={handleEditTunnel}
+                onConfig={handleTunnelConfig}
+                onRoute={handleTunnelRoute}
+                onDelete={handleDeleteTunnel}
+              />
             )}
 
             {/* 操作历史 */}
@@ -7105,11 +6420,11 @@ const Index = () => {
                     } else {
                       throw new Error(data.errors?.[0]?.message || "重新部署失败");
                     }
-                  } catch (err: any) {
+                  } catch (err) {
                     console.error("Retry deployment error:", err);
                     toast({
                       title: "重新部署失败",
-                      description: err.message,
+                      description: errorMessage(err),
                       variant: "destructive",
                     });
                   } finally {

@@ -7,7 +7,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { getCurrentAccount } from "@/lib/accounts-storage";
+import { invokeProviderApi } from "@/lib/cloudflare-worker-api";
 
 interface ManageWorkerVariablesFormProps {
   open: boolean;
@@ -58,13 +59,16 @@ export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, worker
       setIsFetching(true);
 
       try {
-        const { data, error } = await invokeWorkerApi<WorkerSettingsResponse>("cloudflare-api", {
+        const currentAccount = getCurrentAccount();
+        if (!currentAccount || currentAccount.provider !== "cloudflare") {
+          throw new Error("请先登录 Cloudflare 账号");
+        }
+
+        const { data, error } = await invokeProviderApi<WorkerSettingsResponse>("auto", {
           action: "get_worker_settings",
-          email,
-          apiKey,
           accountId,
           scriptName: workerId,
-        });
+        }, currentAccount.credentials);
 
         if (error) throw error;
 
@@ -170,10 +174,18 @@ export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, worker
     setIsLoading(true);
 
     try {
-      const { data, error } = await invokeWorkerApi<UpdateWorkerVariablesResponse>("cloudflare-api", {
+      const currentAccount = getCurrentAccount();
+      if (!currentAccount || currentAccount.provider !== "cloudflare") {
+        toast({
+          title: "缺少凭据",
+          description: "请先登录 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const { data, error } = await invokeProviderApi<UpdateWorkerVariablesResponse>("auto", {
         action: "update_worker_variables",
-        email,
-        apiKey,
         accountId,
         scriptName: workerId,
         data: {
@@ -193,7 +205,7 @@ export function ManageWorkerVariablesForm({ open, onOpenChange, workerId, worker
             .filter(v => v.type === 'secret_text' && v.isExisting) // 只保留已存在的密钥
             .map(v => v.name),
         },
-      });
+      }, currentAccount.credentials);
 
       if (error) throw error;
 

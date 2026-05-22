@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { getCurrentAccount } from "@/lib/accounts-storage";
+import { invokeProviderApi } from "@/lib/cloudflare-worker-api";
 import { recordOperation } from "@/lib/operation-logger";
 
 interface CreateWorkerFormProps {
@@ -73,17 +74,25 @@ export function CreateWorkerForm({ open, onOpenChange, accountId, email, apiKey,
     setIsLoading(true);
 
     try {
+      const currentAccount = getCurrentAccount();
+      if (!currentAccount || currentAccount.provider !== "cloudflare") {
+        toast({
+          title: "缺少凭据",
+          description: "请先登录 Cloudflare 账号",
+          variant: "destructive",
+        });
+        return;
+      }
+
       // 1️⃣ 创建 Worker
-      const { data, error } = await invokeWorkerApi<UploadWorkerResponse>('cloudflare-api', {
+      const { data, error } = await invokeProviderApi<UploadWorkerResponse>("auto", {
         action: 'upload_worker',
-        email,
-        apiKey,
         accountId,
         scriptName: workerName,
         data: {
           script: workerScript,
         },
-      });
+      }, currentAccount.credentials);
 
       if (error) throw error;
 
@@ -91,12 +100,10 @@ export function CreateWorkerForm({ open, onOpenChange, accountId, email, apiKey,
         // 2️⃣ 获取 workers.dev 子域名并构建访问链接
         let visitUrl: string | null = null;
         try {
-          const { data: subData } = await invokeWorkerApi<WorkersSubdomainResponse>('cloudflare-api', {
+          const { data: subData } = await invokeProviderApi<WorkersSubdomainResponse>("auto", {
             action: 'get_workers_subdomain',
-            email,
-            apiKey,
             accountId,
-          });
+          }, currentAccount.credentials);
           const subdomain = subData?.result?.subdomain;
           if (subdomain) {
             visitUrl = `https://${workerName}.${subdomain}.workers.dev`;
