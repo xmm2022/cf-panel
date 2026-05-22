@@ -1,61 +1,26 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { AnalyticsPoint } from "@/lib/providers/capabilities/analytics";
 import { AnalyticsView } from "./AnalyticsView";
-import type { AnalyticsData } from "./analytics-types";
 
-const analyticsData: AnalyticsData = {
-  viewer: {
-    zones: [
-      {
-        httpRequests1dGroups: [
-          {
-            dimensions: { date: "2026-05-20" },
-            sum: {
-              requests: 100,
-              bytes: 1073741824,
-              threats: 5,
-              cachedRequests: 25,
-              cachedBytes: 536870912,
-              encryptedRequests: 90,
-              encryptedBytes: 805306368,
-              pageViews: 60,
-              browserMap: [
-                { uaBrowserFamily: "Chrome", requests: 55 },
-                { uaBrowserFamily: "Safari", requests: 25 },
-              ],
-              countryMap: [
-                { clientCountryName: "中国", requests: 40 },
-                { clientCountryName: "美国", requests: 35 },
-              ],
-              contentTypeMap: [
-                { edgeResponseContentTypeName: "text/html", requests: 45 },
-                { edgeResponseContentTypeName: "application/javascript", requests: 30 },
-              ],
-              responseStatusMap: [
-                { edgeResponseStatus: "200", requests: 80 },
-                { edgeResponseStatus: "404", requests: 15 },
-                { edgeResponseStatus: "500", requests: 5 },
-              ],
-            },
-            uniq: { uniques: 12 },
-          },
-        ],
-        deviceTypeGroups: [
-          { dimensions: { date: "2026-05-20", metric: "desktop" }, sum: { requests: 45 } },
-          { dimensions: { date: "2026-05-20", metric: "mobile" }, sum: { requests: 48 } },
-          { dimensions: { date: "2026-05-20", metric: "tablet" }, sum: { requests: 7 } },
-        ],
-      },
-    ],
+const points: AnalyticsPoint[] = [
+  {
+    date: "2026-05-20",
+    requests: 100,
+    bytes: 1073741824,
+    threats: 5,
+    cachedRequests: 25,
+    cachedBytes: 536870912,
+    uniques: 12,
   },
-};
+];
 
 describe("AnalyticsView", () => {
   it("renders aggregate cards from typed analytics data", () => {
     render(
       <AnalyticsView
-        analyticsData={analyticsData}
+        points={points}
         analyticsPeriod="7d"
         isLoading={false}
         selectedZoneName="example.com"
@@ -79,7 +44,7 @@ describe("AnalyticsView", () => {
 
     render(
       <AnalyticsView
-        analyticsData={analyticsData}
+        points={points}
         analyticsPeriod="7d"
         isLoading={false}
         selectedZoneName="example.com"
@@ -96,7 +61,7 @@ describe("AnalyticsView", () => {
   it("keeps legacy analytics blocks visible with empty states when data is missing", () => {
     render(
       <AnalyticsView
-        analyticsData={null}
+        points={[]}
         analyticsPeriod="7d"
         isLoading={false}
         selectedZoneName="example.com"
@@ -117,7 +82,7 @@ describe("AnalyticsView", () => {
   it("restores the legacy analytics sections after extraction", () => {
     render(
       <AnalyticsView
-        analyticsData={analyticsData}
+        points={points}
         analyticsPeriod="7d"
         isLoading={false}
         selectedZoneName="example.com"
@@ -142,7 +107,7 @@ describe("AnalyticsView", () => {
   it("disables period controls while analytics are loading", () => {
     render(
       <AnalyticsView
-        analyticsData={analyticsData}
+        points={points}
         analyticsPeriod="7d"
         isLoading
         selectedZoneName="example.com"

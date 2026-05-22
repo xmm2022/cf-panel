@@ -4,11 +4,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { formatGigabytes, formatMetricNumber, formatPercent } from "@/components/index-page/shared/formatters";
 import { FileText, Filter, Gauge, Globe, HardDrive, Info, LayoutDashboard, Loader2, Network, Shield } from "lucide-react";
 import { BarChart, Bar, CartesianGrid, Cell, Tooltip, XAxis, YAxis } from "recharts";
-import type { AnalyticsData, AnalyticsPeriod } from "./analytics-types";
-import { getHttpGroups, getPeakUniques, sumGroupField } from "./analytics-utils";
+import type { AnalyticsPeriod, AnalyticsPoint } from "@/lib/providers/capabilities/analytics";
+import type { AnalyticsData } from "./analytics-types";
 
 export interface AnalyticsViewProps {
-  analyticsData: AnalyticsData | null;
+  points: AnalyticsPoint[];
   analyticsPeriod: AnalyticsPeriod;
   isLoading: boolean;
   selectedZoneName: string;
@@ -23,8 +23,32 @@ const periodLabelMap: Record<AnalyticsPeriod, string> = {
   "30d": "最近 30 天",
 };
 
+function toLegacyAnalyticsData(points: AnalyticsPoint[]): AnalyticsData | null {
+  if (!points.length) return null;
+
+  return {
+    viewer: {
+      zones: [
+        {
+          httpRequests1dGroups: points.map((point) => ({
+            dimensions: { date: point.date },
+            sum: {
+              requests: point.requests,
+              bytes: point.bytes,
+              threats: point.threats,
+              cachedRequests: point.cachedRequests,
+              cachedBytes: point.cachedBytes,
+            },
+            uniq: { uniques: point.uniques },
+          })),
+        },
+      ],
+    },
+  };
+}
+
 export function AnalyticsView({
-  analyticsData,
+  points,
   analyticsPeriod,
   isLoading,
   selectedZoneName,
@@ -32,12 +56,14 @@ export function AnalyticsView({
   onRefresh,
   onPeriodChange,
 }: AnalyticsViewProps) {
-  const groups = getHttpGroups(analyticsData);
-  const totalRequests = sumGroupField(groups, "requests");
-  const totalBytes = sumGroupField(groups, "bytes");
-  const totalThreats = sumGroupField(groups, "threats");
-  const cachedRequests = sumGroupField(groups, "cachedRequests");
-  const cachedBytes = sumGroupField(groups, "cachedBytes");
+  const sortedPoints = points.slice().sort((a, b) => a.date.localeCompare(b.date));
+  const totalRequests = sortedPoints.reduce((sum, point) => sum + point.requests, 0);
+  const totalBytes = sortedPoints.reduce((sum, point) => sum + point.bytes, 0);
+  const totalThreats = sortedPoints.reduce((sum, point) => sum + point.threats, 0);
+  const cachedRequests = sortedPoints.reduce((sum, point) => sum + point.cachedRequests, 0);
+  const cachedBytes = sortedPoints.reduce((sum, point) => sum + point.cachedBytes, 0);
+  const peakUniques = Math.max(0, ...sortedPoints.map((point) => point.uniques ?? 0));
+  const analyticsData = toLegacyAnalyticsData(sortedPoints);
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -96,24 +122,24 @@ export function AnalyticsView({
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="p-4 border border-border/50 rounded-lg bg-gradient-to-br from-blue-500/5 to-blue-500/10">
                 <div className="text-sm text-muted-foreground mb-1">总请求数</div>
-                <div className="text-2xl font-bold">{groups.length ? formatMetricNumber(totalRequests) : "-"}</div>
+                <div className="text-2xl font-bold">{sortedPoints.length ? formatMetricNumber(totalRequests) : "-"}</div>
                 <div className="text-xs text-muted-foreground mt-1">{periodLabelMap[analyticsPeriod]}</div>
               </div>
               <div className="p-4 border border-border/50 rounded-lg bg-gradient-to-br from-green-500/5 to-green-500/10">
                 <div className="text-sm text-muted-foreground mb-1">带宽使用</div>
-                <div className="text-2xl font-bold">{groups.length ? formatGigabytes(totalBytes) : "-"}</div>
+                <div className="text-2xl font-bold">{sortedPoints.length ? formatGigabytes(totalBytes) : "-"}</div>
                 <div className="text-xs text-muted-foreground mt-1">{periodLabelMap[analyticsPeriod]}</div>
               </div>
               <div className="p-4 border border-border/50 rounded-lg bg-gradient-to-br from-purple-500/5 to-purple-500/10">
                 <div className="text-sm text-muted-foreground mb-1">独立访客</div>
                 <div className="text-2xl font-bold">
-                  {groups.length ? formatMetricNumber(getPeakUniques(groups)) : "-"}
+                  {sortedPoints.length ? formatMetricNumber(peakUniques) : "-"}
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">峰值</div>
               </div>
               <div className="p-4 border border-border/50 rounded-lg bg-gradient-to-br from-red-500/5 to-red-500/10">
                 <div className="text-sm text-muted-foreground mb-1">威胁拦截</div>
-                <div className="text-2xl font-bold">{groups.length ? formatMetricNumber(totalThreats) : "-"}</div>
+                <div className="text-2xl font-bold">{sortedPoints.length ? formatMetricNumber(totalThreats) : "-"}</div>
                 <div className="text-xs text-muted-foreground mt-1">{periodLabelMap[analyticsPeriod]}</div>
               </div>
             </div>
@@ -136,7 +162,7 @@ export function AnalyticsView({
               </div>
             </div>
 
-            {!groups.length && (
+            {!sortedPoints.length && (
               <div className="h-64 flex items-center justify-center bg-muted/30 rounded">
                 <div className="text-center text-muted-foreground">
                   <LayoutDashboard className="w-12 h-12 mx-auto mb-2 opacity-50" />
@@ -145,37 +171,37 @@ export function AnalyticsView({
               </div>
             )}
 
-            {!!groups.length && (
+            {!!sortedPoints.length && (
               <div className="p-4 border border-border/50 rounded-lg">
                 <h3 className="font-medium mb-4">每日流量统计</h3>
                 <div className="space-y-2">
-                  {groups.map((day) => (
+                  {sortedPoints.map((point) => (
                     <div
-                      key={day.dimensions.date}
+                      key={point.date}
                       className="flex items-center justify-between py-2 border-b border-border/30 last:border-0"
                     >
-                      <span className="text-sm font-medium">{day.dimensions.date}</span>
+                      <span className="text-sm font-medium">{point.date}</span>
                       <div className="flex gap-4 text-sm flex-wrap">
                         <span className="text-muted-foreground">
                           请求:{" "}
                           <span className="font-medium text-foreground">
-                            {formatMetricNumber(day.sum?.requests ?? 0)}
+                            {formatMetricNumber(point.requests)}
                           </span>
                         </span>
                         <span className="text-muted-foreground">
                           带宽:{" "}
                           <span className="font-medium text-foreground">
-                            {((day.sum?.bytes ?? 0) / 1024 / 1024).toFixed(2)} MB
+                            {(point.bytes / 1024 / 1024).toFixed(2)} MB
                           </span>
                         </span>
                         <span className="text-muted-foreground">
                           访客:{" "}
-                          <span className="font-medium text-foreground">{day.uniq?.uniques ?? 0}</span>
+                          <span className="font-medium text-foreground">{point.uniques ?? 0}</span>
                         </span>
                         <span className="text-muted-foreground">
                           缓存:{" "}
                           <span className="font-medium text-green-600">
-                            {formatPercent(day.sum?.cachedRequests ?? 0, day.sum?.requests ?? 0, 0)}
+                            {formatPercent(point.cachedRequests, point.requests, 0)}
                           </span>
                         </span>
                       </div>

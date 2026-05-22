@@ -75,7 +75,6 @@ import FeedbackLibrary from "@/components/FeedbackLibrary";
 import AutoOptimizationPanel from "@/components/AutoOptimizationPanel";
 import { WorkerAnalyticsPanel } from "@/components/WorkerAnalyticsPanel";
 import { AnalyticsView } from "@/components/index-page/analytics/AnalyticsView";
-import type { AnalyticsData, AnalyticsPeriod } from "@/components/index-page/analytics/analytics-types";
 import { WorkersView } from "@/components/index-page/workers/WorkersView";
 import type { WorkerListItem } from "@/components/index-page/workers/workers-types";
 import { PageRulesView } from "@/components/index-page/page-rules/PageRulesView";
@@ -103,7 +102,7 @@ import {
   parseKvImportJson,
 } from "@/components/index-page/kv-storage/kv-storage-actions";
 import type { KvImportEntry } from "@/components/index-page/kv-storage/kv-storage-types";
-import type { AnalyticsPoint } from "@/lib/providers/capabilities/analytics";
+import type { AnalyticsPeriod, AnalyticsPoint } from "@/lib/providers/capabilities/analytics";
 import type { D1Database } from "@/lib/providers/capabilities/d1";
 import type { PagesProject } from "@/lib/providers/capabilities/pages";
 import type { R2Bucket } from "@/lib/providers/capabilities/r2";
@@ -400,28 +399,6 @@ function toWorkersViewItem(worker: Worker): WorkerListItem {
   };
 }
 
-function toLegacyAnalyticsData(points: AnalyticsPoint[]): AnalyticsData {
-  return {
-    viewer: {
-      zones: [
-        {
-          httpRequests1dGroups: points.map((point) => ({
-            dimensions: { date: point.date },
-            sum: {
-              requests: point.requests,
-              bytes: point.bytes,
-              threats: point.threats,
-              cachedRequests: point.cachedRequests,
-              cachedBytes: point.cachedBytes,
-            },
-            uniq: { uniques: point.uniques },
-          })),
-        },
-      ],
-    },
-  };
-}
-
 interface ProviderApiEnvelope<T> {
   success?: boolean;
   result?: T;
@@ -548,7 +525,7 @@ const Index = () => {
   const [uploadingFile, setUploadingFile] = useState(false);
   const [showR2S3Config, setShowR2S3Config] = useState(false);
   const [editingRecord, setEditingRecord] = useState<DNSRecord | null>(null);
-  const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
+  const [analyticsPoints, setAnalyticsPoints] = useState<AnalyticsPoint[]>([]);
   // 创建 D1 数据库对话框
   const [showCreateD1DatabaseForm, setShowCreateD1DatabaseForm] = useState(false);
   const [analyticsPeriod, setAnalyticsPeriod] = useState<AnalyticsPeriod>("7d");
@@ -979,7 +956,7 @@ const Index = () => {
     setActiveView("zones");
     setDnsNavClicks(0);
     setEditingRecord(null);
-    setAnalyticsData(null);
+    setAnalyticsPoints([]);
     setSslMode("");
     setAlwaysUseHttps(false);
     setAutomaticHttpsRewrites(false);
@@ -2852,13 +2829,12 @@ const Index = () => {
     setIsLoading(true);
     try {
       const points = await analyticsCapability.fetch(credentials, zoneId, period);
-      const data = toLegacyAnalyticsData(points);
-      setAnalyticsData(data);
+      setAnalyticsPoints(points);
       toast({
         title: "数据加载成功",
         description: "分析数据已更新",
       });
-      console.log("Analytics data:", data);
+      console.log("Analytics data:", points);
     } catch (error) {
       console.error("Load analytics error:", error);
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -5885,7 +5861,7 @@ const Index = () => {
 
             {activeView === "analytics" && selectedZone && (
               <AnalyticsView
-                analyticsData={analyticsData}
+                points={analyticsPoints}
                 analyticsPeriod={analyticsPeriod}
                 isLoading={isLoading}
                 selectedZoneName={selectedZoneName}

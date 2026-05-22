@@ -1,4 +1,5 @@
 import type { CloudProvider } from "../provider";
+import { edgeoneAnalytics } from "./analytics";
 import { edgeoneCertificates } from "./certificates";
 import { edgeoneDns } from "./dns";
 import { edgeoneKv } from "./kv";
@@ -12,6 +13,7 @@ export const edgeoneProvider: CloudProvider = {
   capabilities: {
     zones: edgeoneZones,
     dns: edgeoneDns,
+    analytics: edgeoneAnalytics,
     kv: edgeoneKv,
     pageRules: edgeonePageRules,
     workers: edgeoneWorkers,
