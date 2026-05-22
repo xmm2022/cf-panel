@@ -1,11 +1,6 @@
+import { cloudflareProvider } from "./cloudflare";
 import type { CloudProvider } from "./provider";
 import type { ProviderId } from "./types";
-
-const cloudflareProvider: CloudProvider = {
-  id: "cloudflare",
-  label: "Cloudflare",
-  capabilities: {},
-};
 
 const edgeoneProvider: CloudProvider = {
   id: "edgeone",
