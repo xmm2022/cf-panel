@@ -76,6 +76,8 @@ import AutoOptimizationPanel from "@/components/AutoOptimizationPanel";
 import { WorkerAnalyticsPanel } from "@/components/WorkerAnalyticsPanel";
 import { AnalyticsView } from "@/components/index-page/analytics/AnalyticsView";
 import type { AnalyticsData, AnalyticsPeriod } from "@/components/index-page/analytics/analytics-types";
+import { WorkersView } from "@/components/index-page/workers/WorkersView";
+import type { WorkerListItem } from "@/components/index-page/workers/workers-types";
 import { PagesView } from "@/components/index-page/pages/PagesView";
 import { CreatePagesProjectDialog } from "@/components/index-page/pages/CreatePagesProjectDialog";
 import type { PagesDeploymentSummary, PagesProjectSummary } from "@/components/index-page/pages/pages-types";
@@ -421,6 +423,15 @@ function toLegacyWorker(worker: WorkerScript): Worker {
     id: worker.id,
     created_on: worker.modifiedOn,
     modified_on: worker.modifiedOn,
+  };
+}
+
+function toWorkersViewItem(worker: Worker): WorkerListItem {
+  return {
+    id: worker.id,
+    modifiedOn: worker.modified_on || worker.created_on,
+    createdOn: worker.created_on,
+    routes: worker.routes,
   };
 }
 
@@ -4490,269 +4501,49 @@ const Index = () => {
             )}
 
             {activeView === "workers" && (
-              <div className="max-w-4xl mx-auto space-y-4">
-                {/* Worker 使用分析面板 */}
-                {zones.length > 0 && zones[0]?.account?.id && (
-                  <WorkerAnalyticsPanel accountId={zones[0].account.id} email={cfEmail} apiKey={cfApiKey} />
-                )}
-
-                <Card className="shadow-card">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="flex items-center gap-2">
-                          <LayoutDashboard className="w-5 h-5" />
-                          Workers 列表
-                        </CardTitle>
-                        <CardDescription>查看和管理您的 Cloudflare Workers</CardDescription>
-                      </div>
-                      <Button onClick={() => setCreateWorkerOpen(true)} disabled={isLoading}>
-                        新建 Worker
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    {isLoading ? (
-                      <div className="flex items-center justify-center py-8">
-                        <Loader2 className="w-6 h-6 animate-spin text-primary" />
-                      </div>
-                    ) : workers.length === 0 ? (
-                      <p className="text-center text-muted-foreground py-8">暂无 Workers</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {[...workers]
-                          .sort((a, b) => {
-                            // 按修改日期排序，最新的在前
-                            const dateA = new Date(a.modified_on || a.created_on || 0);
-                            const dateB = new Date(b.modified_on || b.created_on || 0);
-                            return dateB.getTime() - dateA.getTime();
-                          })
-                          .map((worker) => (
-                            <div
-                              key={worker.id}
-                              className="flex items-center justify-between p-4 rounded-lg border border-border/50 hover:border-primary/50 hover:bg-muted/50 transition-all cursor-pointer"
-                              onClick={() => {
-                                setEditingWorker({ id: worker.id, name: worker.id });
-                                setEditWorkerOpen(true);
-                                if (zones.length > 0 && zones[0]?.account?.id) {
-                                  loadWorkerBindings(worker.id, zones[0].account.id);
-                                }
-                              }}
-                            >
-                              <div className="flex-1">
-                                <h3 className="font-semibold">{worker.id}</h3>
-                                <div className="flex flex-col gap-1.5 mt-1">
-                                  {/* Workers.dev 域名 + 绑定资源 */}
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <a
-                                      href={`https://${worker.id}.${workerSubdomain}.workers.dev`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-xs text-primary hover:underline"
-                                    >
-                                      https://{worker.id}.{workerSubdomain}.workers.dev
-                                    </a>
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      className="h-6 w-6 p-0"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        const url = `https://${worker.id}.${workerSubdomain}.workers.dev`;
-                                        navigator.clipboard.writeText(url);
-                                        toast({
-                                          description: "链接已复制到剪贴板",
-                                        });
-                                      }}
-                                    >
-                                      <Copy className="w-3 h-3" />
-                                    </Button>
-
-                                    {/* 显示 D1、KV 和 R2 绑定 */}
-                                    {allWorkerBindings[worker.id] && allWorkerBindings[worker.id].length > 0 && (
-                                      <>
-                                        {allWorkerBindings[worker.id]
-                                          .filter((b) => b.type === "d1")
-                                          .map((binding, idx) => (
-                                            <span
-                                              key={`d1-${idx}`}
-                                              className="px-2 py-0.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs rounded flex items-center gap-1"
-                                              title={`D1 Database: ${binding.realName || binding.name}`}
-                                            >
-                                              <Database className="w-3 h-3" />
-                                              D1:{binding.realName || binding.name}
-                                            </span>
-                                          ))}
-                                        {allWorkerBindings[worker.id]
-                                          .filter((b) => b.type === "kv_namespace")
-                                          .map((binding, idx) => (
-                                            <span
-                                              key={`kv-${idx}`}
-                                              className="px-2 py-0.5 bg-purple-500/10 text-purple-600 dark:text-purple-400 text-xs rounded flex items-center gap-1"
-                                              title={`KV Namespace: ${binding.realName || binding.name}`}
-                                            >
-                                              <Key className="w-3 h-3" />
-                                              KV:{binding.realName || binding.name}
-                                            </span>
-                                          ))}
-                                        {allWorkerBindings[worker.id]
-                                          .filter((b) => b.type === "r2_bucket")
-                                          .map((binding, idx) => (
-                                            <span
-                                              key={`r2-${idx}`}
-                                              className="px-2 py-0.5 bg-green-500/10 text-green-600 dark:text-green-400 text-xs rounded flex items-center gap-1"
-                                              title={`R2 Bucket: ${binding.bucket_name || binding.name}`}
-                                            >
-                                              <HardDrive className="w-3 h-3" />
-                                              R2:{binding.bucket_name || binding.name}
-                                            </span>
-                                          ))}
-                                      </>
-                                    )}
-                                  </div>
-
-                                  {/* 自定义域名（来自 routes） */}
-                                  {worker.routes && worker.routes.length > 0 && (
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      {worker.routes.slice(0, 3).map((route: any, idx: number) => {
-                                        // 提取域名部分
-                                        const pattern = route.pattern || "";
-                                        const domain = pattern.replace(/\/\*$/, "").replace(/^https?:\/\//, "");
-
-                                        return (
-                                          <div key={idx} className="flex items-center gap-1">
-                                            <Globe className="w-3 h-3 text-muted-foreground" />
-                                            <a
-                                              href={
-                                                pattern.startsWith("http")
-                                                  ? pattern.replace("/*", "")
-                                                  : `https://${domain}`
-                                              }
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              onClick={(e) => e.stopPropagation()}
-                                              className="text-xs text-muted-foreground hover:text-primary transition-colors"
-                                            >
-                                              {domain}
-                                            </a>
-                                            <Button
-                                              size="sm"
-                                              variant="ghost"
-                                              className="h-5 w-5 p-0"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                const url = pattern.startsWith("http")
-                                                  ? pattern.replace("/*", "")
-                                                  : `https://${domain}`;
-                                                navigator.clipboard.writeText(url);
-                                                toast({
-                                                  description: "自定义域名已复制",
-                                                });
-                                              }}
-                                            >
-                                              <Copy className="w-3 h-3" />
-                                            </Button>
-                                          </div>
-                                        );
-                                      })}
-                                      {worker.routes.length > 3 && (
-                                        <span className="text-xs text-muted-foreground">
-                                          +{worker.routes.length - 3} 更多
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                                <p className="text-sm text-muted-foreground mt-1">
-                                  创建时间: {new Date(worker.created_on).toLocaleString("zh-CN")}
-                                </p>
-                              </div>
-                              <div className="flex gap-2">
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button size="sm" variant="outline" title="绑定资源">
-                                      <Database className="w-4 h-4 mr-1" />
-                                      绑定
-                                    </Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent>
-                                    <DropdownMenuItem
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setWorkerForD1Binding({ id: worker.id, name: worker.id });
-                                        setBindD1Open(true);
-                                      }}
-                                    >
-                                      <Database className="w-4 h-4 mr-2" />
-                                      D1 数据库
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setWorkerForR2Binding({ id: worker.id, name: worker.id });
-                                        setBindR2Open(true);
-                                      }}
-                                    >
-                                      <HardDrive className="w-4 h-4 mr-2" />
-                                      R2 存储桶
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setWorkerForKVBinding({ id: worker.id, name: worker.id });
-                                        setBindKVOpen(true);
-                                      }}
-                                    >
-                                      <Key className="w-4 h-4 mr-2" />
-                                      KV 命名空间
-                                    </DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setWorkerForVariables({ id: worker.id, name: worker.id });
-                                    setManageVariablesOpen(true);
-                                  }}
-                                  title="管理环境变量"
-                                >
-                                  <Settings className="w-4 h-4" />
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingWorker({ id: worker.id, name: worker.id });
-                                    setEditWorkerOpen(true);
-                                    if (zones.length > 0 && zones[0]?.account?.id) {
-                                      loadWorkerBindings(worker.id, zones[0].account.id);
-                                    }
-                                  }}
-                                >
-                                  <Edit className="w-4 h-4" />
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="destructive"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    deleteWorker(worker.id, worker.id);
-                                  }}
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            </div>
-                          ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
+              <WorkersView
+                scripts={workers.map(toWorkersViewItem)}
+                isLoading={isLoading}
+                onRefresh={loadWorkers}
+                onCreate={() => setCreateWorkerOpen(true)}
+                onEdit={(workerId) => {
+                  setEditingWorker({ id: workerId, name: workerId });
+                  setEditWorkerOpen(true);
+                  if (zones.length > 0 && zones[0]?.account?.id) {
+                    loadWorkerBindings(workerId, zones[0].account.id);
+                  }
+                }}
+                onDelete={(workerId) => deleteWorker(workerId, workerId)}
+                workerSubdomain={workerSubdomain}
+                bindingsByWorkerId={allWorkerBindings}
+                analyticsPanel={
+                  zones.length > 0 && zones[0]?.account?.id ? (
+                    <WorkerAnalyticsPanel accountId={zones[0].account.id} email={cfEmail} apiKey={cfApiKey} />
+                  ) : null
+                }
+                onCopyUrl={(url, type) => {
+                  navigator.clipboard.writeText(url);
+                  toast({
+                    description: type === "workersDev" ? "链接已复制到剪贴板" : "自定义域名已复制",
+                  });
+                }}
+                onBindD1={(workerId) => {
+                  setWorkerForD1Binding({ id: workerId, name: workerId });
+                  setBindD1Open(true);
+                }}
+                onBindR2={(workerId) => {
+                  setWorkerForR2Binding({ id: workerId, name: workerId });
+                  setBindR2Open(true);
+                }}
+                onBindKV={(workerId) => {
+                  setWorkerForKVBinding({ id: workerId, name: workerId });
+                  setBindKVOpen(true);
+                }}
+                onManageVariables={(workerId) => {
+                  setWorkerForVariables({ id: workerId, name: workerId });
+                  setManageVariablesOpen(true);
+                }}
+              />
             )}
 
             {activeView === "worker-detail" && selectedWorker && (
