@@ -2,6 +2,8 @@
 // Optional environment variable:
 // - ALLOWED_ORIGINS: comma-separated origins allowed to call this Worker.
 
+import { signTc3 } from './worker/edgeone-signer.js';
+
 function parseAllowedOrigins(env) {
   const raw = typeof env.ALLOWED_ORIGINS === 'string' ? env.ALLOWED_ORIGINS : '';
   return raw
@@ -20,7 +22,7 @@ function buildCorsHeaders(request, env) {
   const corsHeaders = {
     'Access-Control-Allow-Origin': allowOrigin || 'null',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, accept',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, accept, x-provider-auth',
   };
 
   if (!allowAllOrigins && matchedOrigin) {
@@ -31,6 +33,24 @@ function buildCorsHeaders(request, env) {
     corsHeaders,
     originAllowed: allowAllOrigins || !!matchedOrigin || !requestOrigin,
   };
+}
+
+function parseProviderAuth(header) {
+  if (!header) return null;
+  const spaceIdx = header.indexOf(' ');
+  if (spaceIdx === -1) return null;
+
+  const provider = header.slice(0, spaceIdx);
+  const fields = {};
+
+  for (const part of header.slice(spaceIdx + 1).split(';')) {
+    if (!part) continue;
+    const eq = part.indexOf('=');
+    if (eq === -1) return null;
+    fields[part.slice(0, eq)] = decodeURIComponent(part.slice(eq + 1));
+  }
+
+  return { provider, fields };
 }
 
 // ==================== 主处理函数 ====================
@@ -62,6 +82,8 @@ export default {
       // 路由分发
       if (path === '/api/cloudflare-api') {
         return await handleCloudflareAPI(request, env, corsHeaders);
+      } else if (path === '/api/edgeone-api') {
+        return await handleEdgeOneAPI(request, env, corsHeaders);
       } else if (path === '/api/verify-cloudflare') {
         return await handleVerifyCloudflare(request, env, corsHeaders);
       } else if (path === '/api/deploy-worker') {
@@ -98,12 +120,15 @@ export default {
 // ==================== Cloudflare API 代理 ====================
 async function handleCloudflareAPI(request, env, corsHeaders) {
   const body = await request.json();
+  const providerAuth = parseProviderAuth(request.headers.get('X-Provider-Auth'));
   const { 
-    action, email, apiKey, zoneId, recordId, accountId, 
+    action, email: bodyEmail, apiKey: bodyApiKey, zoneId, recordId, accountId,
     data, recordData, settings, ruleData, 
     ruleId, pageRuleId, routeId, tunnelId, scriptName, workerId,
     purgeData
   } = body;
+  const email = providerAuth?.provider === 'cloudflare' ? providerAuth.fields.email : bodyEmail;
+  const apiKey = providerAuth?.provider === 'cloudflare' ? providerAuth.fields.key : bodyApiKey;
   
   // 兼容前端发送的各种数据字段
   const actualData = ruleData || recordData || data || {};
@@ -1879,6 +1904,42 @@ if (flags.length) { metadata.compatibility_flags = flags; if (!metadata.compatib
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
+}
+
+async function handleEdgeOneAPI(request, env, corsHeaders) {
+  const body = await request.json();
+  const providerAuth = parseProviderAuth(request.headers.get('X-Provider-Auth'));
+
+  if (!providerAuth || providerAuth.provider !== 'edgeone') {
+    return new Response(JSON.stringify({ error: 'missing or invalid edgeone X-Provider-Auth' }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { action, payload = {}, region = 'ap-guangzhou' } = body;
+  const headers = await signTc3({
+    secretId: providerAuth.fields.secretId,
+    secretKey: providerAuth.fields.secretKey,
+    service: 'teo',
+    host: 'teo.tencentcloudapi.com',
+    action,
+    version: '2022-09-01',
+    region,
+    payload,
+  });
+
+  const response = await fetch('https://teo.tencentcloudapi.com', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text();
+
+  return new Response(text, {
+    status: response.status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
 }
 
 // ==================== 验证 Cloudflare 凭证 ====================
