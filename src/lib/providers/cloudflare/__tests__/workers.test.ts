@@ -1,0 +1,39 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cloudflareWorkers } from "../workers";
+import type { ProviderCredentials } from "../../types";
+
+const creds: ProviderCredentials = {
+  provider: "cloudflare",
+  email: "u@e.com",
+  apiKey: "k",
+};
+
+describe("cloudflareWorkers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes list response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: {
+              success: true,
+              result: [{ id: "worker-a", modified_on: "2026-05-22T00:00:00Z" }],
+            },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const workers = await cloudflareWorkers.list(creds);
+
+    expect(workers).toEqual([
+      { id: "worker-a", modifiedOn: "2026-05-22T00:00:00Z" },
+    ]);
+  });
+});
