@@ -2,6 +2,7 @@ export type AnalyticsPeriod = "24h" | "7d" | "30d";
 
 export interface AnalyticsBreakdownItem {
   requests?: number;
+  edgeResponseStatus?: string;
   uaBrowserFamily?: string;
   clientCountryName?: string;
   edgeResponseContentTypeName?: string;
@@ -22,6 +23,8 @@ export interface AnalyticsGroup {
     encryptedRequests?: number;
     encryptedBytes?: number;
     pageViews?: number;
+    statusMap?: AnalyticsBreakdownItem[];
+    responseStatusMap?: AnalyticsBreakdownItem[];
     browserMap?: AnalyticsBreakdownItem[];
     countryMap?: AnalyticsBreakdownItem[];
     contentTypeMap?: AnalyticsBreakdownItem[];
