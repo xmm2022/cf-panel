@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase-adapter";
 import { useToast } from "@/hooks/use-toast";
 import { getCookie, setCookie } from "@/lib/cookies";
@@ -12,7 +12,7 @@ import {
   deleteAccount,
 } from "@/lib/accounts-storage";
 import { recordOperation } from "@/lib/operation-logger";
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { invokeProviderApi, invokeWorkerApi } from "@/lib/cloudflare-worker-api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -91,8 +91,22 @@ import {
   parseKvImportJson,
 } from "@/components/index-page/kv-storage/kv-storage-actions";
 import type { KvImportEntry } from "@/components/index-page/kv-storage/kv-storage-types";
+import type { AnalyticsPoint } from "@/lib/providers/capabilities/analytics";
+import type { D1Database } from "@/lib/providers/capabilities/d1";
+import type { PagesProject } from "@/lib/providers/capabilities/pages";
+import type { R2Bucket } from "@/lib/providers/capabilities/r2";
+import type { Tunnel } from "@/lib/providers/capabilities/tunnels";
+import { ProviderError } from "@/lib/providers/errors";
 import { providers } from "@/lib/providers/registry";
-import type { ProviderId } from "@/lib/providers/types";
+import type {
+  Certificate as ProviderCertificate,
+  DnsRecord as ProviderDnsRecord,
+  PageRule as ProviderPageRule,
+  ProviderCredentials,
+  ProviderId,
+  WorkerScript,
+  Zone as ProviderZone,
+} from "@/lib/providers/types";
 import { Separator } from "@/components/ui/separator";
 import spiderIcon from "@/assets/spider-icon.png";
 import { useSearchParams } from "react-router-dom";
@@ -323,6 +337,130 @@ const CAPABILITY_ICON_BY_KEY: Record<CapabilitySidebarKey, typeof Globe> = {
 const isProviderId = (value: string | null): value is ProviderId =>
   value === "cloudflare" || value === "edgeone" || value === "esa";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function toLegacyZone(zone: ProviderZone): CloudflareZone {
+  const raw = isRecord(zone.raw) ? (zone.raw as Partial<CloudflareZone>) : {};
+  return {
+    ...raw,
+    id: zone.id,
+    name: zone.name,
+    status: zone.status,
+  };
+}
+
+function toLegacyDnsRecord(record: ProviderDnsRecord): DNSRecord {
+  return {
+    id: record.id,
+    type: record.type,
+    name: record.name,
+    content: record.content,
+    proxied: record.proxied ?? false,
+    ttl: record.ttl,
+  };
+}
+
+function toLegacyPageRule(rule: ProviderPageRule): PageRule {
+  return {
+    id: rule.id,
+    status: rule.status,
+    priority: rule.priority,
+    targets: Array.isArray(rule.rawTargets) ? (rule.rawTargets as PageRuleTarget[]) : undefined,
+    actions: Array.isArray(rule.rawActions) ? (rule.rawActions as PageRuleAction[]) : undefined,
+  };
+}
+
+function toLegacyCertificate(certificate: ProviderCertificate): CertificateSummary {
+  return {
+    id: certificate.id,
+    hosts: certificate.hosts,
+    expires_on: certificate.expiresOn,
+    status: certificate.status,
+  };
+}
+
+function toLegacyD1Database(database: D1Database): D1DatabaseSummary {
+  return {
+    uuid: database.uuid,
+    name: database.name,
+    created_at: database.createdAt,
+  };
+}
+
+function toLegacyR2Bucket(bucket: R2Bucket): R2BucketSummary {
+  return {
+    name: bucket.name,
+    creation_date: bucket.creationDate,
+  };
+}
+
+function toLegacyTunnel(tunnel: Tunnel): TunnelSummary {
+  return {
+    id: tunnel.id,
+    name: tunnel.name,
+    created_at: tunnel.createdAt,
+    status: tunnel.status,
+  };
+}
+
+function toLegacyPagesProject(project: PagesProject): PagesProjectSummary {
+  const raw = isRecord(project.raw) ? (project.raw as Partial<PagesProjectSummary>) : {};
+  return {
+    ...raw,
+    id: project.id,
+    name: project.name,
+    subdomain: project.subdomain,
+    created_on: project.createdOn,
+  };
+}
+
+function toLegacyWorker(worker: WorkerScript): Worker {
+  return {
+    id: worker.id,
+    created_on: worker.modifiedOn,
+    modified_on: worker.modifiedOn,
+  };
+}
+
+function toLegacyAnalyticsData(points: AnalyticsPoint[]): AnalyticsData {
+  return {
+    viewer: {
+      zones: [
+        {
+          httpRequests1dGroups: points.map((point) => ({
+            dimensions: { date: point.date },
+            sum: {
+              requests: point.requests,
+              bytes: point.bytes,
+              threats: point.threats,
+              cachedRequests: point.cachedRequests,
+              cachedBytes: point.cachedBytes,
+            },
+            uniq: { uniques: point.uniques },
+          })),
+        },
+      ],
+    },
+  };
+}
+
+interface ProviderApiEnvelope<T> {
+  success?: boolean;
+  result?: T;
+  error?: string;
+  errors?: Array<{ code?: number; message?: string }>;
+  data?: ProviderApiEnvelope<T>;
+}
+
+function unwrapProviderApiResult<T>(
+  response: ProviderApiEnvelope<T> | null,
+): T | undefined {
+  const envelope = response?.data ?? response;
+  return envelope?.success ? envelope.result : undefined;
+}
+
 const Index = () => {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -492,6 +630,58 @@ const Index = () => {
   });
   const [showExpressionExamples, setShowExpressionExamples] = useState(false);
   const [editingFirewallRule, setEditingFirewallRule] = useState<FirewallRule | null>(null);
+  const hasInitializedAccountRef = useRef(false);
+
+  const provider = providers[activeProviderId];
+
+  const getActiveCredentials = useCallback(
+    (override?: { email: string; apiKey: string }): ProviderCredentials | null => {
+      if (override) {
+        return {
+          provider: "cloudflare",
+          email: override.email,
+          apiKey: override.apiKey,
+        };
+      }
+
+      const account = getCurrentAccount();
+      if (account?.provider === activeProviderId) {
+        return account.credentials;
+      }
+
+      if (activeProviderId === "cloudflare") {
+        const email = cfEmail || getCookie("cf_email");
+        const apiKey = cfApiKey || getCookie("cf_api_key");
+
+        if (email && apiKey) {
+          return { provider: "cloudflare", email, apiKey };
+        }
+      }
+
+      return null;
+    },
+    [activeProviderId, cfApiKey, cfEmail],
+  );
+
+  const handleProviderLoadError = useCallback(
+    (error: unknown, title = "加载失败") => {
+      if (error instanceof ProviderError && error.code === "AUTH_INVALID") {
+        toast({
+          title: "凭据无效",
+          description: "请在账号管理中重新填写凭据",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title,
+        description: error instanceof Error ? error.message : "未知错误",
+        variant: "destructive",
+      });
+    },
+    [toast],
+  );
 
   const handleProviderChange = (nextProviderId: ProviderId) => {
     setActiveProviderId(nextProviderId);
@@ -507,38 +697,8 @@ const Index = () => {
     setActiveView("zones");
   };
 
-  // 首次进入页面规则视图时加载规则列表
-  useEffect(() => {
-    if (activeView === "page-rules" && selectedZone) {
-      loadPageRules();
-    }
-  }, [activeView, selectedZone]);
-
-  // 首次进入 KV 存储视图时加载命名空间列表
-  useEffect(() => {
-    if (activeView === "kv-storage" && zones.length > 0) {
-      loadKvNamespaces();
-    }
-  }, [activeView, zones]);
-
-  // 首次进入统计分析视图时加载数据
-  useEffect(() => {
-    if (activeView === "analytics" && selectedZone) {
-      loadAnalytics(selectedZone);
-    }
-    // loader callback stabilization is deferred to Task 8
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, selectedZone]);
-
-  // 首次进入 Pages 视图时加载项目列表
-  useEffect(() => {
-    if (activeView === "pages" && zones.length > 0) {
-      loadPagesProjects();
-    }
-  }, [activeView, zones]);
-
   // 从 D1 数据库加载 Workers 隐藏设置
-  const loadWorkersHiddenSetting = async () => {
+  const loadWorkersHiddenSetting = useCallback(async () => {
     try {
       const { data, error } = await supabase.functions.invoke("cf-d1-query", {
         body: {
@@ -559,7 +719,7 @@ const Index = () => {
     } catch (error) {
       console.error("Load workers setting error:", error);
     }
-  };
+  }, []);
 
   // 更新 Workers 隐藏设置到 D1 数据库
   const updateWorkersHiddenSetting = async (hidden: boolean) => {
@@ -653,117 +813,24 @@ const Index = () => {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [showWorkers, workerShortcutClicks, workerPermanentlyVisible, workersHiddenByDefault]);
+  }, [showWorkers, toast, workerShortcutClicks, workerPermanentlyVisible, workersHiddenByDefault]);
 
-  // 初始化时加载保存的账号和当前账号
-  useEffect(() => {
-    // 加载所有保存的账号
-    const accounts = getAllAccounts();
-    setSavedAccounts(accounts);
-
-    // 尝试恢复当前账号
-    const currentAcc = getCurrentAccount();
-
-    // 迁移旧的 sessionStorage 或 cookie 凭据到新的账号系统
-    const oldEmail = sessionStorage.getItem("cf_email");
-    const oldApiKey = sessionStorage.getItem("cf_api_key");
-    const cookieEmail = getCookie("cf_email");
-    const cookieApiKey = getCookie("cf_api_key");
-
-    if (oldEmail && oldApiKey) {
-      // 迁移 sessionStorage
-      const migratedAccount = saveAccount(oldEmail, oldApiKey);
-      setCurrentAccount(migratedAccount.id);
-      setCurrentAccountId(migratedAccount.id);
-
-      sessionStorage.removeItem("cf_email");
-      sessionStorage.removeItem("cf_api_key");
-
-      setCfEmail(oldEmail);
-      setCfApiKey(oldApiKey);
-      setCloudflareCredentials(oldEmail, oldApiKey);
-      setHasCredentials(true);
-
-      setSavedAccounts([...accounts, migratedAccount]);
-
-      setTimeout(() => loadZones({ email: oldEmail, apiKey: oldApiKey }), 100);
-      return;
-    }
-
-    if (cookieEmail && cookieApiKey && !currentAcc) {
-      // 迁移 cookie 到账号系统
-      const migratedAccount = saveAccount(cookieEmail, cookieApiKey);
-      setCurrentAccount(migratedAccount.id);
-      setCurrentAccountId(migratedAccount.id);
-
-      setCfEmail(cookieEmail);
-      setCfApiKey(cookieApiKey);
-      setHasCredentials(true);
-
-      setSavedAccounts([...accounts, migratedAccount]);
-
-      setTimeout(() => loadZones({ email: cookieEmail, apiKey: cookieApiKey }), 100);
-      return;
-    }
-
-    if (currentAcc) {
-      // 使用保存的当前账号
-      setCfEmail(currentAcc.email);
-      setCfApiKey(currentAcc.apiKey);
-      setCloudflareCredentials(currentAcc.email, currentAcc.apiKey);
-      setHasCredentials(true);
-      setCurrentAccountId(currentAcc.id);
-
-      // 同时设置 cookie，确保删除等功能可用
-      setCookie("cf_email", currentAcc.email, 30);
-      setCookie("cf_api_key", currentAcc.apiKey, 30);
-
-      setTimeout(() => loadZones({ email: currentAcc.email, apiKey: currentAcc.apiKey }), 100);
-    }
-
-    // 加载 Workers 隐藏设置
-    if (hasCredentials) {
-      loadWorkersHiddenSetting();
-    }
-  }, [hasCredentials]);
-
-  const loadPageRules = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey || !selectedZone) return;
+  const loadPageRules = useCallback(async () => {
+    const credentials = getActiveCredentials();
+    const pageRulesCapability = provider.capabilities.pageRules;
+    if (!credentials || !pageRulesCapability || !selectedZone) return;
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_page_rules",
-          email,
-          apiKey,
-          zoneId: selectedZone,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setPageRules(data.result || []);
-      } else {
-        toast({
-          title: "加载页面规则失败",
-          description: data.errors?.[0]?.message || "未知错误",
-          variant: "destructive",
-        });
-      }
+      const rules = await pageRulesCapability.list(credentials, selectedZone);
+      setPageRules(rules.map(toLegacyPageRule));
     } catch (error) {
       console.error("Load page rules error:", error);
-      toast({
-        title: "加载页面规则失败",
-        variant: "destructive",
-      });
+      handleProviderLoadError(error, "加载页面规则失败");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.pageRules, selectedZone]);
 
   const createOrUpdatePageRule = async () => {
     const email = getCookie("cf_email") || cfEmail;
@@ -1011,87 +1078,39 @@ const Index = () => {
     setR2Error(null);
   };
 
-  const loadD1Databases = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey || zones.length === 0) return;
-
-    const accountId = zones[0]?.account?.id;
-    if (!accountId) return;
+  const loadD1Databases = useCallback(async () => {
+    const credentials = getActiveCredentials();
+    const d1Capability = provider.capabilities.d1;
+    if (!credentials || !d1Capability) return;
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_d1_databases",
-          email,
-          apiKey,
-          accountId,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setD1Databases(data.result || []);
-      } else {
-        toast({
-          title: "加载 D1 数据库失败",
-          description: data.errors?.[0]?.message || "未知错误",
-          variant: "destructive",
-        });
-      }
+      const databases = await d1Capability.listDatabases(credentials);
+      setD1Databases(databases.map(toLegacyD1Database));
     } catch (error) {
       console.error("Load D1 databases error:", error);
-      toast({
-        title: "加载失败",
-        variant: "destructive",
-      });
+      handleProviderLoadError(error, "加载 D1 数据库失败");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.d1]);
 
-  const loadKvNamespaces = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey || zones.length === 0) return;
-
-    const accountId = zones[0]?.account?.id;
-    if (!accountId) return;
+  const loadKvNamespaces = useCallback(async () => {
+    const credentials = getActiveCredentials();
+    const kvCapability = provider.capabilities.kv;
+    if (!credentials || !kvCapability) return;
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_kv_namespaces",
-          email,
-          apiKey,
-          accountId,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setKvNamespaces(data.result || []);
-      } else {
-        toast({
-          title: "加载 KV 命名空间失败",
-          description: data.errors?.[0]?.message || "未知错误",
-          variant: "destructive",
-        });
-      }
+      const namespaces = await kvCapability.listNamespaces(credentials);
+      setKvNamespaces(namespaces);
     } catch (error) {
       console.error("Load KV namespaces error:", error);
-      toast({
-        title: "加载失败",
-        variant: "destructive",
-      });
+      handleProviderLoadError(error, "加载 KV 命名空间失败");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.kv]);
 
   const handleCreateKvNamespace = async (namespaceName: string) => {
     if (!namespaceName) {
@@ -1586,124 +1605,52 @@ const Index = () => {
     }
   };
 
-  const loadR2Buckets = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey || zones.length === 0) return;
-
-    const accountId = zones[0]?.account?.id;
-    if (!accountId) return;
+  const loadR2Buckets = useCallback(async () => {
+    const credentials = getActiveCredentials();
+    const r2Capability = provider.capabilities.r2;
+    if (!credentials || !r2Capability) return;
 
     setIsLoading(true);
     setR2Error(null);
     setR2Buckets([]); // 确保重置为空数组
     try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_r2_buckets",
-          email,
-          apiKey,
-          accountId,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        // R2 API 返回的是 result.buckets 结构
-        const buckets = data.result?.buckets || [];
-        setR2Buckets(Array.isArray(buckets) ? buckets : []);
-      } else {
-        const errorMsg = data.errors?.[0]?.message || "未知错误";
-        setR2Error(errorMsg);
-        setR2Buckets([]); // 确保是数组
-      }
+      const buckets = await r2Capability.listBuckets(credentials);
+      setR2Buckets(buckets.map(toLegacyR2Bucket));
     } catch (error) {
       console.error("Load R2 buckets error:", error);
-      setR2Error("加载失败，请稍后重试");
+      setR2Error(error instanceof Error ? error.message : "加载失败，请稍后重试");
       setR2Buckets([]); // 确保是数组
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getActiveCredentials, provider.capabilities.r2]);
 
-  const loadTunnels = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey || zones.length === 0) return;
-
-    const accountId = zones[0]?.account?.id;
-    if (!accountId) return;
+  const loadTunnels = useCallback(async () => {
+    const credentials = getActiveCredentials();
+    const tunnelsCapability = provider.capabilities.tunnels;
+    if (!credentials || !tunnelsCapability) return;
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_tunnels",
-          email,
-          apiKey,
-          accountId,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        // 过滤掉已删除的 tunnel（deleted_at 不为 null）
-        const activeTunnels = (data.result || []).filter((tunnel: TunnelSummary) => !tunnel.deleted_at);
-        setTunnels(activeTunnels);
-      } else {
-        toast({
-          title: "加载 Tunnels 失败",
-          description: data.errors?.[0]?.message || "未知错误",
-          variant: "destructive",
-        });
-      }
+      const activeTunnels = await tunnelsCapability.list(credentials);
+      setTunnels(activeTunnels.map(toLegacyTunnel).filter((tunnel) => !tunnel.deleted_at));
     } catch (error) {
       console.error("Load tunnels error:", error);
-      toast({
-        title: "加载失败",
-        variant: "destructive",
-      });
+      handleProviderLoadError(error, "加载 Tunnels 失败");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.tunnels]);
 
-  const loadCertificates = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey || !selectedZone) return;
+  const loadCertificates = useCallback(async () => {
+    const credentials = getActiveCredentials();
+    const certificatesCapability = provider.capabilities.certificates;
+    if (!credentials || !certificatesCapability || !selectedZone) return;
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_certificates",
-          email,
-          apiKey,
-          zoneId: selectedZone,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setCertificates(Array.isArray(data.result) ? data.result : []);
-      } else {
-        // 检查是否是账户级别限制
-        const errorMsg = data.errors?.[0]?.message || "";
-        if (errorMsg.includes("Plan level") || errorMsg.includes("custom certificates")) {
-          // 免费版账户，不显示错误
-          setCertificates([]);
-        } else {
-          toast({
-            title: "加载证书失败",
-            description: errorMsg || "未知错误",
-            variant: "destructive",
-          });
-        }
-      }
+      const list = await certificatesCapability.list(credentials, selectedZone);
+      setCertificates(list.map(toLegacyCertificate));
     } catch (error) {
       console.error("Load certificates error:", error);
       // 静默处理，不显示错误提示
@@ -1711,48 +1658,24 @@ const Index = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getActiveCredentials, provider.capabilities.certificates, selectedZone]);
 
-  const loadPagesProjects = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey || zones.length === 0) return;
-
-    const accountId = zones[0]?.account?.id;
-    if (!accountId) return;
+  const loadPagesProjects = useCallback(async () => {
+    const credentials = getActiveCredentials();
+    const pagesCapability = provider.capabilities.pages;
+    if (!credentials || !pagesCapability) return;
 
     setIsLoadingPages(true);
     try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_pages_projects",
-          email,
-          apiKey,
-          accountId,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setPagesProjects(data.result || []);
-      } else {
-        toast({
-          title: "加载 Pages 项目失败",
-          description: data.errors?.[0]?.message || "未知错误",
-          variant: "destructive",
-        });
-      }
+      const projects = await pagesCapability.list(credentials);
+      setPagesProjects(projects.map(toLegacyPagesProject));
     } catch (error) {
       console.error("Load pages projects error:", error);
-      toast({
-        title: "加载失败",
-        variant: "destructive",
-      });
+      handleProviderLoadError(error, "加载 Pages 项目失败");
     } finally {
       setIsLoadingPages(false);
     }
-  };
+  }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.pages]);
 
   const loadPagesDeployments = async (projectName: string) => {
     const email = getCookie("cf_email") || cfEmail;
@@ -1995,42 +1918,97 @@ const Index = () => {
     }
   };
 
-  const loadZones = async (override?: { email: string; apiKey: string }) => {
-    const email = override?.email ?? (cfEmail || getCookie("cf_email"));
-    const apiKey = override?.apiKey ?? (cfApiKey || getCookie("cf_api_key"));
-    if (!email || !apiKey) return;
+  const loadZones = useCallback(async (override?: { email: string; apiKey: string }) => {
+    const credentials = getActiveCredentials(override);
+    const zonesCapability = credentials
+      ? providers[credentials.provider].capabilities.zones
+      : provider.capabilities.zones;
+    if (!credentials || !zonesCapability) return;
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_zones",
-          email,
-          apiKey,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setZones(data.result || []);
-      } else {
-        toast({
-          title: "加载域名失败",
-          description: data.errors?.[0]?.message || "未知错误",
-          variant: "destructive",
-        });
-      }
+      const list = await zonesCapability.list(credentials);
+      setZones(list.map(toLegacyZone));
     } catch (error) {
       console.error("Load zones error:", error);
-      toast({
-        title: "加载失败",
-        variant: "destructive",
-      });
+      handleProviderLoadError(error, "加载域名失败");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.zones]);
+
+  // 初始化时加载保存的账号和当前账号
+  useEffect(() => {
+    if (hasInitializedAccountRef.current) return;
+    hasInitializedAccountRef.current = true;
+
+    // 加载所有保存的账号
+    const accounts = getAllAccounts();
+    setSavedAccounts(accounts);
+
+    // 尝试恢复当前账号
+    const currentAcc = getCurrentAccount();
+
+    // 迁移旧的 sessionStorage 或 cookie 凭据到新的账号系统
+    const oldEmail = sessionStorage.getItem("cf_email");
+    const oldApiKey = sessionStorage.getItem("cf_api_key");
+    const cookieEmail = getCookie("cf_email");
+    const cookieApiKey = getCookie("cf_api_key");
+
+    if (oldEmail && oldApiKey) {
+      // 迁移 sessionStorage
+      const migratedAccount = saveAccount(oldEmail, oldApiKey);
+      setCurrentAccount(migratedAccount.id);
+      setCurrentAccountId(migratedAccount.id);
+
+      sessionStorage.removeItem("cf_email");
+      sessionStorage.removeItem("cf_api_key");
+
+      setCfEmail(oldEmail);
+      setCfApiKey(oldApiKey);
+      setCloudflareCredentials(oldEmail, oldApiKey);
+      setHasCredentials(true);
+
+      setSavedAccounts([...accounts, migratedAccount]);
+
+      setTimeout(() => loadZones({ email: oldEmail, apiKey: oldApiKey }), 100);
+      void loadWorkersHiddenSetting();
+      return;
+    }
+
+    if (cookieEmail && cookieApiKey && !currentAcc) {
+      // 迁移 cookie 到账号系统
+      const migratedAccount = saveAccount(cookieEmail, cookieApiKey);
+      setCurrentAccount(migratedAccount.id);
+      setCurrentAccountId(migratedAccount.id);
+
+      setCfEmail(cookieEmail);
+      setCfApiKey(cookieApiKey);
+      setHasCredentials(true);
+
+      setSavedAccounts([...accounts, migratedAccount]);
+
+      setTimeout(() => loadZones({ email: cookieEmail, apiKey: cookieApiKey }), 100);
+      void loadWorkersHiddenSetting();
+      return;
+    }
+
+    if (currentAcc) {
+      // 使用保存的当前账号
+      setCfEmail(currentAcc.email);
+      setCfApiKey(currentAcc.apiKey);
+      setCloudflareCredentials(currentAcc.email, currentAcc.apiKey);
+      setHasCredentials(true);
+      setCurrentAccountId(currentAcc.id);
+
+      // 同时设置 cookie，确保删除等功能可用
+      setCookie("cf_email", currentAcc.email, 30);
+      setCookie("cf_api_key", currentAcc.apiKey, 30);
+
+      setTimeout(() => loadZones({ email: currentAcc.email, apiKey: currentAcc.apiKey }), 100);
+      void loadWorkersHiddenSetting();
+    }
+  }, [loadZones, loadWorkersHiddenSetting]);
 
   const loadWorkerBindings = async (workerId: string, accountId: string) => {
     const email = cfEmail || getCookie("cf_email");
@@ -2063,48 +2041,38 @@ const Index = () => {
     }
   };
 
-  const loadDNSRecords = async (zoneId: string) => {
-    const email = cfEmail || getCookie("cf_email");
-    const apiKey = cfApiKey || getCookie("cf_api_key");
-    if (!email || !apiKey) return;
+  const loadDNSRecords = useCallback(async (zoneId: string) => {
+    const credentials = getActiveCredentials();
+    const dnsCapability = provider.capabilities.dns;
+    if (!credentials || !dnsCapability || !zoneId) return;
 
     setIsLoading(true);
     try {
       // 加载DNS记录
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_dns_records",
-          email,
-          apiKey,
-          zoneId,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setDnsRecords(data.result || []);
-      }
+      const records = await dnsCapability.list(credentials, zoneId);
+      setDnsRecords(records.map(toLegacyDnsRecord));
 
       // 加载Worker路由
-      const { data: routesData, error: routesError } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
+      const { data: routesData, error: routesError } = await invokeProviderApi<ProviderApiEnvelope<WorkerRoute[]>>(
+        "auto",
+        {
           action: "list_worker_routes",
-          email,
-          apiKey,
           zoneId,
         },
-      });
+        credentials,
+      );
 
-      if (!routesError && routesData?.success) {
-        setWorkerRoutes(routesData.result || []);
+      const routes = !routesError ? unwrapProviderApiResult(routesData) : undefined;
+      if (routes) {
+        setWorkerRoutes(routes);
       }
     } catch (error) {
       console.error("Load DNS records error:", error);
+      handleProviderLoadError(error, "加载 DNS 记录失败");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.dns]);
 
   const loadZoneSettings = async (zoneId: string) => {
     const email = getCookie("cf_email") || cfEmail;
@@ -2797,53 +2765,44 @@ const Index = () => {
     }
   };
 
-  const loadWorkers = async () => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey) return;
+  const loadWorkers = useCallback(async () => {
+    const credentials = getActiveCredentials();
+    const workersCapability = provider.capabilities.workers;
+    if (!credentials || !workersCapability) return;
 
     setIsLoading(true);
     try {
       let accountId = zones[0]?.account?.id;
 
       if (!accountId) {
-        const { data: zonesData, error: zonesError } = await supabase.functions.invoke("cloudflare-api", {
-          body: {
-            action: "list_zones",
-            email,
-            apiKey,
-          },
-        });
-
-        if (zonesError) throw zonesError;
-
-        if (zonesData.success && zonesData.result?.length > 0) {
-          accountId = zonesData.result[0]?.account?.id;
-          setZones(zonesData.result);
+        const zonesCapability = provider.capabilities.zones;
+        if (zonesCapability) {
+          const zoneList = await zonesCapability.list(credentials);
+          const legacyZones = zoneList.map(toLegacyZone);
+          accountId = legacyZones[0]?.account?.id;
+          setZones(legacyZones);
         }
       }
 
       if (!accountId) {
-        toast({
-          title: "无法获取账户信息",
-          description: "请先在 Cloudflare 中添加域名",
-          variant: "destructive",
-        });
-        return;
+        throw new ProviderError(activeProviderId, "NOT_FOUND", "无法获取账户信息");
       }
 
       // 获取 workers.dev subdomain
-      const { data: subdomainData, error: subdomainError } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
+      const { data: subdomainData, error: subdomainError } = await invokeProviderApi<
+        ProviderApiEnvelope<{ subdomain?: string }>
+      >(
+        "auto",
+        {
           action: "get_workers_subdomain",
-          email,
-          apiKey,
           accountId: accountId,
         },
-      });
+        credentials,
+      );
 
-      if (!subdomainError && subdomainData.success && subdomainData.result?.subdomain) {
-        const subdomain = subdomainData.result.subdomain;
+      const subdomainResult = !subdomainError ? unwrapProviderApiResult(subdomainData) : undefined;
+      if (subdomainResult?.subdomain) {
+        const subdomain = subdomainResult.subdomain;
         setWorkerSubdomain(subdomain);
         setCookie("cf_worker_subdomain", subdomain, 30); // 保存到 cookie
       } else if (!workerSubdomain) {
@@ -2851,171 +2810,115 @@ const Index = () => {
         setWorkerSubdomain(accountId.slice(0, 8));
       }
 
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_workers",
-          email,
-          apiKey,
-          accountId: accountId,
-        },
-      });
+      const workersList = (await workersCapability.list(credentials)).map(toLegacyWorker);
+      setWorkers(workersList);
 
-      if (error) throw error;
+      // 为每个 Worker 加载 bindings
+      if (accountId && workersList.length > 0) {
+        // 先加载 D1 数据库和 KV 命名空间列表
+        const [d1Response, kvResponse] = await Promise.all([
+          invokeProviderApi<ProviderApiEnvelope<D1DatabaseSummary[]>>(
+            "auto",
+            { action: "list_d1_databases", accountId },
+            credentials,
+          ),
+          invokeProviderApi<ProviderApiEnvelope<KVNamespaceSummary[]>>(
+            "auto",
+            { action: "list_kv_namespaces", accountId },
+            credentials,
+          ),
+        ]);
 
-      if (data.success) {
-        const workersList = data.result || [];
-        setWorkers(workersList);
+        // 创建ID到名称的映射
+        const d1Map: Record<string, string> = {};
+        const kvMap: Record<string, string> = {};
 
-        // 为每个 Worker 加载 bindings
-        if (accountId && workersList.length > 0) {
-          // 先加载 D1 数据库和 KV 命名空间列表
-          const [d1Response, kvResponse] = await Promise.all([
-            supabase.functions.invoke("cloudflare-api", {
-              body: { action: "list_d1_databases", email, apiKey, accountId },
-            }),
-            supabase.functions.invoke("cloudflare-api", {
-              body: { action: "list_kv_namespaces", email, apiKey, accountId },
-            }),
-          ]);
+        const d1List = !d1Response.error ? unwrapProviderApiResult(d1Response.data) : undefined;
+        const kvList = !kvResponse.error ? unwrapProviderApiResult(kvResponse.data) : undefined;
 
-          // 创建ID到名称的映射
-          const d1Map: Record<string, string> = {};
-          const kvMap: Record<string, string> = {};
+        (d1List ?? []).forEach((db) => {
+          d1Map[db.uuid] = db.name;
+        });
 
-          if (!d1Response.error && d1Response.data.success) {
-            (d1Response.data.result || []).forEach((db: D1DatabaseSummary) => {
-              d1Map[db.uuid] = db.name;
-            });
-          }
+        (kvList ?? []).forEach((ns) => {
+          kvMap[ns.id] = ns.title;
+        });
 
-          if (!kvResponse.error && kvResponse.data.success) {
-            (kvResponse.data.result || []).forEach((ns: KVNamespaceSummary) => {
-              kvMap[ns.id] = ns.title;
-            });
-          }
+        const bindingsMap: Record<string, WorkerBinding[]> = {};
+        await Promise.all(
+          workersList.map(async (worker: Worker) => {
+            try {
+              const { data: bindingsData, error: bindingsError } = await invokeProviderApi<
+                ProviderApiEnvelope<WorkerBinding[] | { bindings?: WorkerBinding[] }>
+              >(
+                "auto",
+                {
+                  action: "get_worker_bindings",
+                  accountId,
+                  scriptName: worker.id,
+                },
+                credentials,
+              );
 
-          const bindingsMap: Record<string, WorkerBinding[]> = {};
-          await Promise.all(
-            workersList.map(async (worker: Worker) => {
-              try {
-                const { data: bindingsData, error: bindingsError } = await supabase.functions.invoke("cloudflare-api", {
-                  body: {
-                    action: "get_worker_bindings",
-                    email,
-                    apiKey,
-                    accountId,
-                    scriptName: worker.id,
-                  },
+              const bindingsResult = !bindingsError ? unwrapProviderApiResult(bindingsData) : undefined;
+              if (bindingsResult) {
+                // Cloudflare API 返回的是数组，不是嵌套的对象
+                let bindings = Array.isArray(bindingsResult)
+                  ? bindingsResult
+                  : bindingsResult.bindings || [];
+
+                // 增强bindings，添加真实的数据库/命名空间名称
+                bindings = bindings.map((binding: WorkerBinding) => {
+                  if (binding.type === "d1" && binding.database_id) {
+                    return { ...binding, realName: d1Map[binding.database_id] || binding.name };
+                  } else if (binding.type === "kv_namespace" && binding.namespace_id) {
+                    return { ...binding, realName: kvMap[binding.namespace_id] || binding.name };
+                  }
+                  return binding;
                 });
 
-                if (!bindingsError && bindingsData.success) {
-                  // Cloudflare API 返回的是数组，不是嵌套的对象
-                  let bindings = Array.isArray(bindingsData.result)
-                    ? bindingsData.result
-                    : bindingsData.result?.bindings || [];
-
-                  // 增强bindings，添加真实的数据库/命名空间名称
-                  bindings = bindings.map((binding: WorkerBinding) => {
-                    if (binding.type === "d1" && binding.database_id) {
-                      return { ...binding, realName: d1Map[binding.database_id] || binding.name };
-                    } else if (binding.type === "kv_namespace" && binding.namespace_id) {
-                      return { ...binding, realName: kvMap[binding.namespace_id] || binding.name };
-                    }
-                    return binding;
-                  });
-
-                  bindingsMap[worker.id] = bindings;
-                }
-              } catch (error) {
-                console.error(`Error loading bindings for ${worker.id}:`, error);
+                bindingsMap[worker.id] = bindings;
               }
-            }),
-          );
-          setAllWorkerBindings(bindingsMap);
-        }
+            } catch (error) {
+              console.error(`Error loading bindings for ${worker.id}:`, error);
+            }
+          }),
+        );
+        setAllWorkerBindings(bindingsMap);
       } else {
-        toast({
-          title: "加载 Workers 失败",
-          description: data.error || "未知错误",
-          variant: "destructive",
-        });
+        setAllWorkerBindings({});
       }
     } catch (error) {
       console.error("Load workers error:", error);
-      toast({
-        title: "加载失败",
-        variant: "destructive",
-      });
+      handleProviderLoadError(error, "加载 Workers 失败");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [
+    activeProviderId,
+    getActiveCredentials,
+    handleProviderLoadError,
+    provider.capabilities.workers,
+    provider.capabilities.zones,
+    workerSubdomain,
+    zones,
+  ]);
 
-  const loadAnalytics = async (zoneId: string, period: AnalyticsPeriod = analyticsPeriod) => {
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    if (!email || !apiKey) return;
+  const loadAnalytics = useCallback(async (zoneId: string, period: AnalyticsPeriod = analyticsPeriod) => {
+    const credentials = getActiveCredentials();
+    const analyticsCapability = provider.capabilities.analytics;
+    if (!credentials || !analyticsCapability || !zoneId) return;
 
     setIsLoading(true);
     try {
-      // 计算日期范围
-      const now = new Date();
-      let since = new Date();
-
-      switch (period) {
-        case "24h":
-          since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-          break;
-        case "7d":
-          since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-          break;
-        case "30d":
-          since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-          break;
-      }
-
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "get_analytics",
-          email,
-          apiKey,
-          zoneId,
-          data: {
-            since: since.toISOString(),
-            until: now.toISOString(),
-          },
-        },
+      const points = await analyticsCapability.fetch(credentials, zoneId, period);
+      const data = toLegacyAnalyticsData(points);
+      setAnalyticsData(data);
+      toast({
+        title: "数据加载成功",
+        description: "分析数据已更新",
       });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setAnalyticsData(data.result);
-        toast({
-          title: "数据加载成功",
-          description: "分析数据已更新",
-        });
-        console.log("Analytics data:", data.result);
-      } else {
-        const errorMsg = data.errors?.[0]?.message || "未知错误";
-        toast({
-          title: "加载失败",
-          description: errorMsg,
-          variant: "destructive",
-          action: errorMsg ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                navigator.clipboard.writeText(errorMsg);
-                toast({ title: "已复制错误信息" });
-              }}
-            >
-              复制
-            </Button>
-          ) : undefined,
-        });
-      }
+      console.log("Analytics data:", data);
     } catch (error) {
       console.error("Load analytics error:", error);
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -3039,7 +2942,43 @@ const Index = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [
+    analyticsPeriod,
+    getActiveCredentials,
+    provider.capabilities.analytics,
+    toast,
+  ]);
+
+  // 首次进入各能力视图时加载对应资源列表
+  useEffect(() => {
+    if (activeView === "page-rules" && selectedZone) {
+      void loadPageRules();
+    }
+  }, [activeView, selectedZone, loadPageRules]);
+
+  useEffect(() => {
+    if (activeView === "kv-storage") {
+      void loadKvNamespaces();
+    }
+  }, [activeView, loadKvNamespaces]);
+
+  useEffect(() => {
+    if (activeView === "analytics" && selectedZone) {
+      void loadAnalytics(selectedZone);
+    }
+  }, [activeView, selectedZone, loadAnalytics]);
+
+  useEffect(() => {
+    if (activeView === "pages") {
+      void loadPagesProjects();
+    }
+  }, [activeView, loadPagesProjects]);
+
+  useEffect(() => {
+    if (activeView === "certificates" && selectedZone) {
+      void loadCertificates();
+    }
+  }, [activeView, selectedZone, loadCertificates]);
 
   const deleteDNSRecord = async (zoneId: string, recordId: string) => {
     if (!confirm("确定要删除这条 DNS 记录吗？")) return;

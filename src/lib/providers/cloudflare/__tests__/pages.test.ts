@@ -8,6 +8,18 @@ const creds: ProviderCredentials = {
   apiKey: "k",
 };
 
+function zonesResponse() {
+  return new Response(
+    JSON.stringify({
+      data: {
+        success: true,
+        result: [{ id: "zone1", name: "example.com", status: "active", account: { id: "acc1" } }],
+      },
+    }),
+    { status: 200 },
+  );
+}
+
 describe("cloudflarePages", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -17,23 +29,26 @@ describe("cloudflarePages", () => {
   it("normalizes list response", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            data: {
-              success: true,
-              result: [
-                {
-                  name: "site",
-                  subdomain: "site.pages.dev",
-                  created_on: "2026-05-22T00:00:00Z",
-                },
-              ],
-            },
-          }),
-          { status: 200 },
+      vi
+        .fn()
+        .mockResolvedValueOnce(zonesResponse())
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              data: {
+                success: true,
+                result: [
+                  {
+                    name: "site",
+                    subdomain: "site.pages.dev",
+                    created_on: "2026-05-22T00:00:00Z",
+                  },
+                ],
+              },
+            }),
+            { status: 200 },
+          ),
         ),
-      ),
     );
 
     const projects = await cloudflarePages.list(creds);

@@ -8,6 +8,18 @@ const creds: ProviderCredentials = {
   apiKey: "k",
 };
 
+function zonesResponse() {
+  return new Response(
+    JSON.stringify({
+      data: {
+        success: true,
+        result: [{ id: "zone1", name: "example.com", status: "active", account: { id: "acc1" } }],
+      },
+    }),
+    { status: 200 },
+  );
+}
+
 describe("cloudflareWorkers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -17,17 +29,20 @@ describe("cloudflareWorkers", () => {
   it("normalizes list response", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            data: {
-              success: true,
-              result: [{ id: "worker-a", modified_on: "2026-05-22T00:00:00Z" }],
-            },
-          }),
-          { status: 200 },
+      vi
+        .fn()
+        .mockResolvedValueOnce(zonesResponse())
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              data: {
+                success: true,
+                result: [{ id: "worker-a", modified_on: "2026-05-22T00:00:00Z" }],
+              },
+            }),
+            { status: 200 },
+          ),
         ),
-      ),
     );
 
     const workers = await cloudflareWorkers.list(creds);

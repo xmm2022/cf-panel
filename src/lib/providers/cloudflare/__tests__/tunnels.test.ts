@@ -8,6 +8,18 @@ const creds: ProviderCredentials = {
   apiKey: "k",
 };
 
+function zonesResponse() {
+  return new Response(
+    JSON.stringify({
+      data: {
+        success: true,
+        result: [{ id: "zone1", name: "example.com", status: "active", account: { id: "acc1" } }],
+      },
+    }),
+    { status: 200 },
+  );
+}
+
 describe("cloudflareTunnels", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -17,24 +29,27 @@ describe("cloudflareTunnels", () => {
   it("normalizes list response", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            data: {
-              success: true,
-              result: [
-                {
-                  id: "tun1",
-                  name: "main",
-                  created_at: "2026-05-22T00:00:00Z",
-                  status: "healthy",
-                },
-              ],
-            },
-          }),
-          { status: 200 },
+      vi
+        .fn()
+        .mockResolvedValueOnce(zonesResponse())
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              data: {
+                success: true,
+                result: [
+                  {
+                    id: "tun1",
+                    name: "main",
+                    created_at: "2026-05-22T00:00:00Z",
+                    status: "healthy",
+                  },
+                ],
+              },
+            }),
+            { status: 200 },
+          ),
         ),
-      ),
     );
 
     const tunnels = await cloudflareTunnels.list(creds);

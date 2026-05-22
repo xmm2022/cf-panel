@@ -8,6 +8,18 @@ const creds: ProviderCredentials = {
   apiKey: "k",
 };
 
+function zonesResponse() {
+  return new Response(
+    JSON.stringify({
+      data: {
+        success: true,
+        result: [{ id: "zone1", name: "example.com", status: "active", account: { id: "acc1" } }],
+      },
+    }),
+    { status: 200 },
+  );
+}
+
 describe("cloudflareR2", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -17,19 +29,22 @@ describe("cloudflareR2", () => {
   it("normalizes list response", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            data: {
-              success: true,
-              result: {
-                buckets: [{ name: "assets", creation_date: "2026-05-22T00:00:00Z" }],
+      vi
+        .fn()
+        .mockResolvedValueOnce(zonesResponse())
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              data: {
+                success: true,
+                result: {
+                  buckets: [{ name: "assets", creation_date: "2026-05-22T00:00:00Z" }],
+                },
               },
-            },
-          }),
-          { status: 200 },
+            }),
+            { status: 200 },
+          ),
         ),
-      ),
     );
 
     const buckets = await cloudflareR2.listBuckets(creds);
