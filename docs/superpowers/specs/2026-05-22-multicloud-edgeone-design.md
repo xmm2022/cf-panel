@@ -63,7 +63,7 @@ export interface Zone {
   name: string;
   status: string;
   provider: ProviderId;
-  raw?: unknown; // 调试用，可选
+  raw?: unknown; // Provider 内部 normalize 时填，view 严禁读取，仅供 console 调试
 }
 
 export interface DnsRecord {
@@ -225,16 +225,25 @@ sign({
 `X-Provider-Auth` header 格式：
 
 ```
-X-Provider-Auth: cloudflare email=user@example.com;key=abc123
+X-Provider-Auth: <provider> <k=v>[;<k=v>...]
+
+# 示例
+X-Provider-Auth: cloudflare email=user%40example.com;key=abc123
 X-Provider-Auth: edgeone secretId=AKID...;secretKey=...
 ```
 
-CF 现有调用渐进迁移：`src/lib/cloudflare-worker-api.ts` 加新 wrapper `invokeProviderApi(providerId, action, payload)`，它从 `getCurrentAccount()` 取凭据并生成 header；老 `invokeWorkerApi` 暂保留向后兼容，所有 view 改用新 wrapper 时同步迁移。
+**ABNF / 解析规则：**
+- provider token 与字段段之间用单个空格分隔；
+- 字段段内多个 `k=v` 用 `;` 分隔；
+- 所有 value **必须 URL-encoded**（`encodeURIComponent`），从而无歧义地承载 `;` / `=` / 空格 / 中文等字符；
+- Worker 端 parser 一次 split + decodeURIComponent，绑定到 schema 校验。
+
+CF 现有调用渐进迁移：`src/lib/cloudflare-worker-api.ts` 加新 wrapper `invokeProviderApi(providerId, action, payload)`，它从 `getCurrentAccount()` 取凭据并生成 header；老 `invokeWorkerApi` 暂保留向后兼容，所有 view 改用新 wrapper 时同步迁移。**退出条件：P4 完成时删除 `invokeWorkerApi`，所有调用点统一走 `invokeProviderApi`**。
 
 ### 凭据安全
 
 - Worker 不持久化 secret。
-- D1 `operation_history` 仅记录操作类型 + 资源 ID。
+- D1 `operation_history` 表（**现有表，无 schema 变更**）仅记录操作类型 + 资源 ID。
 - Worker 日志不打 secret 字符串（统一一个 redactCreds 工具）。
 
 ## UI Topology
@@ -302,20 +311,40 @@ const loadZones = async () => {
 记忆里"Plan Task 5-7 视图都比 KV 小、建议遇扩展再抽"的判断在引入 provider 后变了 — EdgeOne 接入就是那个"扩展点"。新工作顺序：
 
 1. **P0 底盘** — `providers/` 类型与 capability interfaces + Cloudflare provider 包装现有 loader + Worker `X-Provider-Auth` header 兼容层 + Account schema 迁移。
-2. **P1 UI 抬层** — Account 模型升级 + ProviderSwitcher + 侧边栏动态菜单。此时 CF 是唯一 provider，行为等价于现状。
+2. **P1 UI 抬层** — Account 模型升级 + ProviderSwitcher + 侧边栏动态菜单。此时 CF 是唯一 provider，行为等价于现状。Plan Task 8（顶层 loader 整理）顺势完成。
 3. **P2 EdgeOne 最薄切片** — Worker TC3 签名 + edgeone provider + zones/DNS 双跑通，验证整条链路。
-4. **P3 EdgeOne 能力补齐** — KV → Workers → Page Rules → Certificates → Analytics。
-5. **P4 Plan 残债** — Index.tsx 剩余视图抽取（原 Plan Task 5-7）与 P3 合并完成；Plan Task 8（顶层 loader 整理）在 P0/P1 顺势做掉。
+4. **P3 EdgeOne 能力补齐 + Index.tsx 视图抽取（交错完成）** — 顺序：每加一个 EdgeOne 能力，先抽出对应的 CF view（如果还未抽），让它走 provider-agnostic props，然后实现 EdgeOne 的同名 capability。具体顺序：KV（已抽）→ Workers（需先抽）→ Page Rules（需先抽，对应原 Plan Task 5）→ Certificates（需先抽，对应原 Plan Task 6 一半）→ Analytics（已抽）。
+5. **P4 收尾** — 抽出 Tunnels（对应原 Plan Task 6 另一半，CF only）、D1、R2（对应原 Plan Task 7，CF only），统一切到 `invokeProviderApi`；删除 `invokeWorkerApi`；清理 schema v1 兼容代码。
 
-每抽一个 view，同时让它接受 provider-agnostic props。把"Plan 剩余 + EdgeOne 接入"打包成一次性投入。
+**交错原则**：每个能力的 CF view 抽取与 EdgeOne 实现在同一对 commit 里完成，避免 view 在两个方向上同时变。
 
 预计 14-17 commit 在分支 `feat/multicloud-edgeone`。
 
 ## Error Handling
 
-- Provider 实现内 normalize 错误：所有 capability method 抛出统一 `ProviderError { provider, code, message, raw }`。
+Provider 实现内 normalize 错误，所有 capability method 抛出统一 `ProviderError`：
+
+```ts
+export type ProviderErrorCode =
+  | "AUTH_INVALID"      // 凭据无效或过期，引导重新填
+  | "QUOTA_EXCEEDED"    // API 配额超限
+  | "SIGNING_FAILED"    // Worker 端签名生成失败（编程错误）
+  | "NOT_FOUND"         // 资源不存在
+  | "UNKNOWN";          // 其他（含上游 5xx）
+
+export class ProviderError extends Error {
+  constructor(
+    public provider: ProviderId,
+    public code: ProviderErrorCode,
+    public message: string,
+    public upstreamCode?: string,  // 透传上游错误码（如 CF "10000" / TC "AuthFailure.SignatureFailure"）
+    public raw?: unknown,
+  ) { super(message); }
+}
+```
+
 - View 层用现有 toast 显示 `${provider.label}: ${error.message}`。
-- 签名错误 / 凭据无效 / 配额超限 三类典型错误码在 ProviderError 上单独标识，便于 view 决定是否引导重新填凭据。
+- `code === "AUTH_INVALID"` 时额外触发"打开账号管理"引导。
 
 ## Testing Strategy
 
