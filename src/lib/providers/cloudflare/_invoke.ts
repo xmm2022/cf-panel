@@ -1,4 +1,4 @@
-import { invokeWorkerApi } from "@/lib/cloudflare-worker-api";
+import { invokeProviderApi } from "@/lib/cloudflare-worker-api";
 import { ProviderError, type ProviderErrorCode } from "../errors";
 import type { ProviderCredentials } from "../types";
 
@@ -57,14 +57,13 @@ export async function callCloudflare<T>(
     );
   }
 
-  const { data, error } = await invokeWorkerApi<WrappedCloudflareEnvelope<T>>(
-    "cloudflare-api",
+  const { data, error } = await invokeProviderApi<WrappedCloudflareEnvelope<T>>(
+    "auto",
     {
       action,
-      email: creds.email,
-      apiKey: creds.apiKey,
       ...extra,
     },
+    creds,
   );
 
   if (error) {
