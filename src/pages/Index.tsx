@@ -82,10 +82,16 @@ import type { PagesDeploymentSummary, PagesProjectSummary } from "@/components/i
 import { KvStorageView } from "@/components/index-page/kv-storage/KvStorageView";
 import { ProviderSwitcher } from "@/components/ProviderSwitcher";
 import {
+  buildSidebarItems,
+  type CapabilitySidebarKey,
+  type SidebarItem,
+} from "@/components/index-page/shared/capability-menu";
+import {
   buildKvExportFileName,
   parseKvImportJson,
 } from "@/components/index-page/kv-storage/kv-storage-actions";
 import type { KvImportEntry } from "@/components/index-page/kv-storage/kv-storage-types";
+import { providers } from "@/lib/providers/registry";
 import type { ProviderId } from "@/lib/providers/types";
 import { Separator } from "@/components/ui/separator";
 import spiderIcon from "@/assets/spider-icon.png";
@@ -278,6 +284,42 @@ interface PageRule {
   actions?: PageRuleAction[];
 }
 
+type IndexView =
+  | "deploy"
+  | "zones"
+  | "dns"
+  | "workers"
+  | "worker-detail"
+  | "ssl"
+  | "cache"
+  | "firewall"
+  | "analytics"
+  | "page-rules"
+  | "kv-storage"
+  | "certificates"
+  | "d1-database"
+  | "r2-storage"
+  | "tunnels"
+  | "feedback"
+  | "operation-history"
+  | "worker-templates"
+  | "auto-optimization"
+  | "pages";
+
+const CAPABILITY_ICON_BY_KEY: Record<CapabilitySidebarKey, typeof Globe> = {
+  zones: Globe,
+  dns: Database,
+  "page-rules": Settings,
+  workers: LayoutDashboard,
+  kv: Key,
+  certificates: Shield,
+  analytics: LayoutDashboard,
+  pages: FileText,
+  r2: HardDrive,
+  d1: Database,
+  tunnels: Network,
+};
+
 const isProviderId = (value: string | null): value is ProviderId =>
   value === "cloudflare" || value === "edgeone" || value === "esa";
 
@@ -314,28 +356,7 @@ const Index = () => {
   const [workerBindings, setWorkerBindings] = useState<WorkerBinding[]>([]);
   const [allWorkerBindings, setAllWorkerBindings] = useState<Record<string, WorkerBinding[]>>({});
   const [isLoading, setIsLoading] = useState(false);
-  const [activeView, setActiveView] = useState<
-    | "deploy"
-    | "zones"
-    | "dns"
-    | "workers"
-    | "worker-detail"
-    | "ssl"
-    | "cache"
-    | "firewall"
-    | "analytics"
-    | "page-rules"
-    | "kv-storage"
-    | "certificates"
-    | "d1-database"
-    | "r2-storage"
-    | "tunnels"
-    | "feedback"
-    | "operation-history"
-    | "worker-templates"
-    | "auto-optimization"
-    | "pages"
-  >("zones");
+  const [activeView, setActiveView] = useState<IndexView>("zones");
   const [dnsNavClicks, setDnsNavClicks] = useState(0);
   const [d1Databases, setD1Databases] = useState<D1DatabaseSummary[]>([]);
   const [r2Buckets, setR2Buckets] = useState<R2BucketSummary[]>([]);
@@ -3333,6 +3354,64 @@ const Index = () => {
     }
   };
 
+  const sidebarItems = buildSidebarItems(activeProviderId, providers);
+  const sidebarItemByKey = new Map<CapabilitySidebarKey, SidebarItem>(
+    sidebarItems.map((item) => [item.key, item]),
+  );
+
+  const handleCapabilitySidebarItemClick = (item: SidebarItem) => {
+    setActiveView(item.view);
+
+    switch (item.key) {
+      case "zones":
+        loadZones();
+        break;
+      case "dns":
+        loadDNSRecords(selectedZone);
+        setDnsNavClicks((clicks) => clicks + 1);
+        break;
+      case "workers":
+        loadWorkers();
+        break;
+      case "analytics":
+        loadAnalytics(selectedZone);
+        break;
+      case "certificates":
+        if (selectedZone) loadCertificates();
+        break;
+      case "pages":
+        loadPagesProjects();
+        break;
+      case "r2":
+        loadR2Buckets();
+        break;
+      case "d1":
+        loadD1Databases();
+        break;
+      case "tunnels":
+        loadTunnels();
+        break;
+    }
+  };
+
+  const renderCapabilitySidebarItem = (key: CapabilitySidebarKey) => {
+    const item = sidebarItemByKey.get(key);
+    if (!item || (item.key === "workers" && !showWorkers)) return null;
+
+    const Icon = CAPABILITY_ICON_BY_KEY[item.key];
+    return (
+      <SidebarMenuItem key={item.key}>
+        <SidebarMenuButton
+          onClick={() => handleCapabilitySidebarItemClick(item)}
+          isActive={activeView === item.view}
+        >
+          <Icon className="w-4 h-4" />
+          <span>{item.label}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  };
+
   // 凭据输入界面
   if (!hasCredentials) {
     return (
@@ -3610,18 +3689,7 @@ const Index = () => {
               <SidebarGroupLabel>全局功能</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => {
-                        setActiveView("zones");
-                        loadZones();
-                      }}
-                      isActive={activeView === "zones"}
-                    >
-                      <Globe className="w-4 h-4" />
-                      <span>域名管理</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  {renderCapabilitySidebarItem("zones")}
                   <SidebarMenuItem>
                     <SidebarMenuButton onClick={() => setActiveView("deploy")} isActive={activeView === "deploy"}>
                       <Zap className="w-4 h-4" />
@@ -3652,59 +3720,11 @@ const Index = () => {
                       <span>操作历史</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                  {showWorkers && (
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        onClick={() => {
-                          setActiveView("workers");
-                          loadWorkers();
-                        }}
-                        isActive={activeView === "workers"}
-                      >
-                        <LayoutDashboard className="w-4 h-4" />
-                        <span>Workers</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  )}
-                  <SidebarMenuItem>
-                    <SidebarMenuButton onClick={() => setActiveView("pages")} isActive={activeView === "pages"}>
-                      <FileText className="w-4 h-4" />
-                      <span>Pages</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => {
-                        setActiveView("d1-database");
-                        loadD1Databases();
-                      }}
-                      isActive={activeView === "d1-database"}
-                    >
-                      <Database className="w-4 h-4" />
-                      <span>D1 数据库</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => {
-                        setActiveView("r2-storage");
-                        loadR2Buckets();
-                      }}
-                      isActive={activeView === "r2-storage"}
-                    >
-                      <HardDrive className="w-4 h-4" />
-                      <span>R2 存储桶</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => setActiveView("kv-storage")}
-                      isActive={activeView === "kv-storage"}
-                    >
-                      <Key className="w-4 h-4" />
-                      <span>Workers KV</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  {renderCapabilitySidebarItem("workers")}
+                  {renderCapabilitySidebarItem("pages")}
+                  {renderCapabilitySidebarItem("d1")}
+                  {renderCapabilitySidebarItem("r2")}
+                  {renderCapabilitySidebarItem("kv")}
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       onClick={() => setActiveView("worker-templates")}
@@ -3714,18 +3734,7 @@ const Index = () => {
                       <span>Worker 模板库</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => {
-                        setActiveView("tunnels");
-                        loadTunnels();
-                      }}
-                      isActive={activeView === "tunnels"}
-                    >
-                      <Network className="w-4 h-4" />
-                      <span>Cloudflare Tunnels</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  {renderCapabilitySidebarItem("tunnels")}
                   <SidebarMenuItem>
                     <SidebarMenuButton onClick={() => setActiveView("feedback")} isActive={activeView === "feedback"}>
                       <MessageSquare className="w-4 h-4" />
@@ -3817,19 +3826,7 @@ const Index = () => {
                 </div>
                 <SidebarGroupContent>
                   <SidebarMenu>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        onClick={() => {
-                          setActiveView("dns");
-                          loadDNSRecords(selectedZone);
-                          setDnsNavClicks((c) => c + 1);
-                        }}
-                        isActive={activeView === "dns"}
-                      >
-                        <Database className="w-4 h-4" />
-                        <span>DNS 记录</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
+                    {renderCapabilitySidebarItem("dns")}
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         onClick={() => {
@@ -3865,39 +3862,9 @@ const Index = () => {
                         <span>防火墙</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        onClick={() => {
-                          setActiveView("analytics");
-                          loadAnalytics(selectedZone);
-                        }}
-                        isActive={activeView === "analytics"}
-                      >
-                        <LayoutDashboard className="w-4 h-4" />
-                        <span>统计分析</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        onClick={() => setActiveView("page-rules")}
-                        isActive={activeView === "page-rules"}
-                      >
-                        <Settings className="w-4 h-4" />
-                        <span>页面规则</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        onClick={() => {
-                          setActiveView("certificates");
-                          if (selectedZone) loadCertificates();
-                        }}
-                        isActive={activeView === "certificates"}
-                      >
-                        <Shield className="w-4 h-4" />
-                        <span>证书管理</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
+                    {renderCapabilitySidebarItem("analytics")}
+                    {renderCapabilitySidebarItem("page-rules")}
+                    {renderCapabilitySidebarItem("certificates")}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
