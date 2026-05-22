@@ -79,6 +79,12 @@ import type { AnalyticsData, AnalyticsPeriod } from "@/components/index-page/ana
 import { PagesView } from "@/components/index-page/pages/PagesView";
 import { CreatePagesProjectDialog } from "@/components/index-page/pages/CreatePagesProjectDialog";
 import type { PagesDeploymentSummary, PagesProjectSummary } from "@/components/index-page/pages/pages-types";
+import { KvStorageView } from "@/components/index-page/kv-storage/KvStorageView";
+import {
+  buildKvExportFileName,
+  parseKvImportJson,
+} from "@/components/index-page/kv-storage/kv-storage-actions";
+import type { KvImportEntry } from "@/components/index-page/kv-storage/kv-storage-types";
 import { Separator } from "@/components/ui/separator";
 import spiderIcon from "@/assets/spider-icon.png";
 import {
@@ -1036,6 +1042,499 @@ const Index = () => {
         title: "加载失败",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCreateKvNamespace = async (namespaceName: string) => {
+    if (!namespaceName) {
+      toast({
+        title: "请输入命名空间名称",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    if (!email || !apiKey) {
+      toast({
+        title: "未找到 Cloudflare 凭证",
+        description: "请先登录 Cloudflare 账号",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const accountId = zones[0]?.account?.id;
+      if (!accountId) {
+        toast({
+          title: "无法获取账户 ID",
+          description: "请先选择一个域名",
+          variant: "destructive",
+        });
+        setIsLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
+        body: {
+          action: "create_kv_namespace",
+          email,
+          apiKey,
+          accountId,
+          data: {
+            title: namespaceName,
+          },
+        },
+      });
+
+      if (error) throw error;
+
+      if (data.success) {
+        toast({
+          title: "命名空间创建成功",
+        });
+        const input = document.getElementById("kv-namespace-name") as HTMLInputElement | null;
+        if (input) input.value = "";
+        // 重新加载命名空间列表
+        loadKvNamespaces();
+      } else {
+        toast({
+          title: "创建失败",
+          description: data.errors?.[0]?.message || "未知错误",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Create namespace error:", error);
+      toast({
+        title: "创建失败",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRefreshKvNamespaces = async () => {
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    if (!email || !apiKey) {
+      toast({
+        title: "未找到 Cloudflare 凭证",
+        description: "请先登录 Cloudflare 账号",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const accountId = zones[0]?.account?.id;
+    if (!accountId) {
+      toast({
+        title: "无法获取账户 ID",
+        description: "请先选择一个域名",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
+        body: {
+          action: "list_kv_namespaces",
+          email,
+          apiKey,
+          accountId,
+        },
+      });
+
+      if (error) throw error;
+
+      if (data.success) {
+        setKvNamespaces(data.result || []);
+        toast({
+          title: `列表已刷新 (${data.result?.length || 0} 个命名空间)`,
+        });
+      } else {
+        toast({
+          title: "加载失败",
+          description: data.errors?.[0]?.message || "未知错误",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Load namespaces error:", error);
+      toast({
+        title: "加载失败",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteKvNamespace = async (namespace: KVNamespaceSummary) => {
+    if (
+      !confirm(
+        `确定要删除命名空间 "${namespace.title}" 吗？此操作将删除该命名空间下的所有键值对，且无法恢复。`,
+      )
+    ) {
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
+        body: {
+          action: "delete_kv_namespace",
+          email,
+          apiKey,
+          accountId,
+          namespaceId: namespace.id,
+        },
+      });
+
+      if (error) throw error;
+
+      if (data.success) {
+        toast({ title: "命名空间删除成功" });
+        setKvNamespaces(kvNamespaces.filter((n) => n.id !== namespace.id));
+        if (selectedKvNamespace === namespace.id) {
+          setSelectedKvNamespace("");
+          setKvKeys([]);
+        }
+      } else {
+        toast({
+          title: "删除失败",
+          description: data.errors?.[0]?.message || "未知错误",
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({
+        title: "删除失败",
+        description: e.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSaveKvKeyValue = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
+    const valInput = document.getElementById("kv-value") as HTMLTextAreaElement | null;
+    const key = keyInput?.value?.trim() || "";
+    const value = valInput?.value || "";
+    if (!key) {
+      toast({ title: "请输入键名", variant: "destructive" });
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        headers: {
+          "X-Auth-Email": email,
+          "X-Auth-Key": apiKey,
+          "Content-Type": "text/plain",
+        },
+        body: value,
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok && json.success !== false) {
+        toast({ title: "保存成功" });
+        if (!kvKeys.find((k) => k.name === key)) {
+          setKvKeys([...kvKeys, { name: key }]);
+        }
+      } else {
+        toast({
+          title: "保存失败",
+          description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({ title: "保存失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleReadKvValue = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
+    const valInput = document.getElementById("kv-value") as HTMLTextAreaElement | null;
+    const key = keyInput?.value?.trim() || "";
+    if (!key) {
+      toast({ title: "请输入键名", variant: "destructive" });
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
+        method: "GET",
+        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+      });
+      if (resp.ok) {
+        const text = await resp.text();
+        if (valInput) valInput.value = text;
+        toast({ title: "读取成功" });
+      } else {
+        const err = await resp.json().catch(() => ({}));
+        toast({
+          title: "读取失败",
+          description: err.errors?.[0]?.message || `HTTP ${resp.status}`,
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({ title: "读取失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteKvKey = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
+    const key = keyInput?.value?.trim() || "";
+    if (!key) {
+      toast({ title: "请输入键名", variant: "destructive" });
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
+        method: "DELETE",
+        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok && json.success !== false) {
+        toast({ title: "删除成功" });
+        setKvKeys(kvKeys.filter((k) => k.name !== key));
+        setSelectedKvKeys(selectedKvKeys.filter((n) => n !== key));
+      } else {
+        toast({
+          title: "删除失败",
+          description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({ title: "删除失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleExportKvKeys = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    if (selectedKvKeys.length === 0 && kvKeys.length === 0) {
+      toast({ title: "无可导出的键" });
+      return;
+    }
+    const keysToExport = selectedKvKeys.length
+      ? selectedKvKeys
+      : kvKeys.map((k) => k.name);
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const entries: KvImportEntry[] = [];
+      for (const k of keysToExport) {
+        const resp = await fetch(`${base}/values/${encodeURIComponent(k)}`, {
+          headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+        });
+        const val = resp.ok ? await resp.text() : "";
+        entries.push({ key: k, value: val });
+      }
+      const blob = new Blob([JSON.stringify(entries, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = buildKvExportFileName(selectedKvNamespace);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast({ title: "导出完成", description: `共导出 ${entries.length} 个键` });
+    } catch (e: any) {
+      toast({ title: "导出失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleImportKvKeys = async (file: File) => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const text = await file.text();
+    let entries: KvImportEntry[];
+    try {
+      entries = parseKvImportJson(text);
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : "";
+      if (message.includes("数组")) {
+        toast({ title: "格式错误，应为数组", variant: "destructive" });
+      } else {
+        toast({ title: "JSON 解析失败", variant: "destructive" });
+      }
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      let ok = 0;
+      for (const item of entries) {
+        const resp = await fetch(`${base}/values/${encodeURIComponent(item.key)}`, {
+          method: "PUT",
+          headers: {
+            "X-Auth-Email": email,
+            "X-Auth-Key": apiKey,
+            "Content-Type": "text/plain",
+          },
+          body: item.value,
+        });
+        if (resp.ok) ok++;
+      }
+      toast({ title: "导入完成", description: `成功 ${ok} 个` });
+      // 刷新列表
+      const resp = await fetch(`${base}/keys?limit=1000`, {
+        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+      });
+      const j = await resp.json();
+      if (j?.result) setKvKeys(j.result);
+    } catch (e: any) {
+      toast({ title: "导入失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLoadKvKeys = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const resp = await fetch(`${base}/keys?limit=1000`, {
+        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+      });
+      const json = await resp.json();
+      if (resp.ok && json?.result) {
+        setKvKeys(json.result);
+        setSelectedKvKeys([]);
+        toast({ title: "已加载键列表", description: `共 ${json.result.length} 个` });
+      } else {
+        toast({
+          title: "加载失败",
+          description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({ title: "加载失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteSelectedKvKeys = async () => {
+    if (!selectedKvNamespace || selectedKvKeys.length === 0) return;
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      let ok = 0;
+      for (const k of selectedKvKeys) {
+        const resp = await fetch(`${base}/values/${encodeURIComponent(k)}`, {
+          method: "DELETE",
+          headers: { "X-Auth-Email": email!, "X-Auth-Key": apiKey! },
+        });
+        if (resp.ok) ok++;
+      }
+      setKvKeys(kvKeys.filter((i) => !selectedKvKeys.includes(i.name)));
+      setSelectedKvKeys([]);
+      toast({ title: "批量删除完成", description: `成功 ${ok} 个` });
+    } catch (e: any) {
+      toast({ title: "批量删除失败", description: e.message, variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -6236,748 +6735,29 @@ const Index = () => {
             )}
 
             {activeView === "kv-storage" && (
-              <div className="max-w-6xl mx-auto">
-                <Card className="shadow-card mb-6">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Key className="w-5 h-5" />
-                      Workers KV 管理
-                    </CardTitle>
-                    <CardDescription>管理 Workers KV 命名空间和键值对</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-6">
-                      {/* 创建命名空间 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4">创建 KV 命名空间</h3>
-                        <div className="flex gap-2">
-                          <Input placeholder="输入命名空间名称" id="kv-namespace-name" className="flex-1" />
-                          <Button
-                            onClick={async () => {
-                              const input = document.getElementById("kv-namespace-name") as HTMLInputElement;
-                              const namespaceName = input?.value;
-                              if (!namespaceName) {
-                                toast({
-                                  title: "请输入命名空间名称",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-
-                              const email = getCookie("cf_email") || cfEmail;
-                              const apiKey = getCookie("cf_api_key") || cfApiKey;
-                              if (!email || !apiKey) {
-                                toast({
-                                  title: "未找到 Cloudflare 凭证",
-                                  description: "请先登录 Cloudflare 账号",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-
-                              setIsLoading(true);
-                              try {
-                                const accountId = zones[0]?.account?.id;
-                                if (!accountId) {
-                                  toast({
-                                    title: "无法获取账户 ID",
-                                    description: "请先选择一个域名",
-                                    variant: "destructive",
-                                  });
-                                  setIsLoading(false);
-                                  return;
-                                }
-
-                                const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                  body: {
-                                    action: "create_kv_namespace",
-                                    email,
-                                    apiKey,
-                                    accountId,
-                                    data: {
-                                      title: namespaceName,
-                                    },
-                                  },
-                                });
-
-                                if (error) throw error;
-
-                                if (data.success) {
-                                  toast({
-                                    title: "命名空间创建成功",
-                                  });
-                                  input.value = "";
-                                  // 重新加载命名空间列表
-                                  loadKvNamespaces();
-                                } else {
-                                  toast({
-                                    title: "创建失败",
-                                    description: data.errors?.[0]?.message || "未知错误",
-                                    variant: "destructive",
-                                  });
-                                }
-                              } catch (error) {
-                                console.error("Create namespace error:", error);
-                                toast({
-                                  title: "创建失败",
-                                  variant: "destructive",
-                                });
-                              } finally {
-                                setIsLoading(false);
-                              }
-                            }}
-                            disabled={isLoading}
-                          >
-                            {isLoading ? (
-                              <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                创建中...
-                              </>
-                            ) : (
-                              "创建命名空间"
-                            )}
-                          </Button>
-                        </div>
-                      </div>
-
-                      {/* 命名空间列表 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <div className="flex justify-between items-center mb-4">
-                          <h3 className="font-medium">KV 命名空间列表</h3>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={async () => {
-                              const email = getCookie("cf_email") || cfEmail;
-                              const apiKey = getCookie("cf_api_key") || cfApiKey;
-                              if (!email || !apiKey) {
-                                toast({
-                                  title: "未找到 Cloudflare 凭证",
-                                  description: "请先登录 Cloudflare 账号",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-
-                              const accountId = zones[0]?.account?.id;
-                              if (!accountId) {
-                                toast({
-                                  title: "无法获取账户 ID",
-                                  description: "请先选择一个域名",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-
-                              setIsLoading(true);
-                              try {
-                                const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                  body: {
-                                    action: "list_kv_namespaces",
-                                    email,
-                                    apiKey,
-                                    accountId,
-                                  },
-                                });
-
-                                if (error) throw error;
-
-                                if (data.success) {
-                                  setKvNamespaces(data.result || []);
-                                  toast({
-                                    title: `列表已刷新 (${data.result?.length || 0} 个命名空间)`,
-                                  });
-                                } else {
-                                  toast({
-                                    title: "加载失败",
-                                    description: data.errors?.[0]?.message || "未知错误",
-                                    variant: "destructive",
-                                  });
-                                }
-                              } catch (error) {
-                                console.error("Load namespaces error:", error);
-                                toast({
-                                  title: "加载失败",
-                                  variant: "destructive",
-                                });
-                              } finally {
-                                setIsLoading(false);
-                              }
-                            }}
-                            disabled={isLoading}
-                          >
-                            {isLoading ? (
-                              <>
-                                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                                加载中...
-                              </>
-                            ) : (
-                              "刷新列表"
-                            )}
-                          </Button>
-                        </div>
-                        {kvNamespaces.length === 0 ? (
-                          <div className="text-sm text-muted-foreground text-center py-8">
-                            暂无命名空间数据，点击上方创建或刷新列表
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {kvNamespaces.map((ns: any) => (
-                              <div key={ns.id} className="p-3 border border-border/50 rounded-md bg-card/50">
-                                <div className="flex justify-between items-start">
-                                  <div>
-                                    <h4 className="font-medium">{ns.title}</h4>
-                                    <p className="text-xs text-muted-foreground mt-1">ID: {ns.id}</p>
-                                  </div>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={async () => {
-                                      if (
-                                        !confirm(
-                                          `确定要删除命名空间 "${ns.title}" 吗？此操作将删除该命名空间下的所有键值对，且无法恢复。`,
-                                        )
-                                      ) {
-                                        return;
-                                      }
-                                      const email = getCookie("cf_email") || cfEmail;
-                                      const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                      const accountId = zones[0]?.account?.id;
-                                      if (!email || !apiKey || !accountId) {
-                                        toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                        return;
-                                      }
-                                      setIsLoading(true);
-                                      try {
-                                        const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                          body: {
-                                            action: "delete_kv_namespace",
-                                            email,
-                                            apiKey,
-                                            accountId,
-                                            namespaceId: ns.id,
-                                          },
-                                        });
-
-                                        if (error) throw error;
-
-                                        if (data.success) {
-                                          toast({ title: "命名空间删除成功" });
-                                          setKvNamespaces(kvNamespaces.filter((n: any) => n.id !== ns.id));
-                                          if (selectedKvNamespace === ns.id) {
-                                            setSelectedKvNamespace("");
-                                            setKvKeys([]);
-                                          }
-                                        } else {
-                                          toast({
-                                            title: "删除失败",
-                                            description: data.errors?.[0]?.message || "未知错误",
-                                            variant: "destructive",
-                                          });
-                                        }
-                                      } catch (e: any) {
-                                        toast({
-                                          title: "删除失败",
-                                          description: e.message,
-                                          variant: "destructive",
-                                        });
-                                      } finally {
-                                        setIsLoading(false);
-                                      }
-                                    }}
-                                  >
-                                    <Trash2 className="h-4 w-4 text-destructive" />
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 键值对管理 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4">键值对管理</h3>
-                        <div className="space-y-4">
-                          <div>
-                            <Label className="text-sm mb-2 block">选择命名空间</Label>
-                            <select
-                              className="w-full p-2 border border-border/50 rounded-md bg-background"
-                              value={selectedKvNamespace}
-                              onChange={(e) => setSelectedKvNamespace(e.target.value)}
-                            >
-                              <option value="">
-                                {kvNamespaces.length === 0 ? "请先加载命名空间列表" : "请选择命名空间"}
-                              </option>
-                              {kvNamespaces.map((ns: any) => (
-                                <option key={ns.id} value={ns.id}>
-                                  {ns.title} (ID: {ns.id})
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-
-                          <Separator />
-
-                          <div className="space-y-3">
-                            <h4 className="text-sm font-medium">添加/更新键值对</h4>
-                            <div>
-                              <Label className="text-sm mb-2 block">键 (Key)</Label>
-                              <Input placeholder="例如：user:123" id="kv-key" className="mb-2" />
-                            </div>
-                            <div>
-                              <Label className="text-sm mb-2 block">值 (Value)</Label>
-                              <textarea
-                                placeholder='例如：{"name": "John", "age": 30}'
-                                id="kv-value"
-                                className="w-full min-h-[100px] p-2 border border-border/50 rounded-md bg-background"
-                              />
-                              <p className="text-xs text-muted-foreground mt-1">支持文本、JSON 等格式</p>
-                            </div>
-                            <div className="flex gap-2">
-                              <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={async () => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
-                                  const valInput = document.getElementById("kv-value") as HTMLTextAreaElement | null;
-                                  const key = keyInput?.value?.trim() || "";
-                                  const value = valInput?.value || "";
-                                  if (!key) {
-                                    toast({ title: "请输入键名", variant: "destructive" });
-                                    return;
-                                  }
-                                  const email = getCookie("cf_email") || cfEmail;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                  const accountId = zones[0]?.account?.id;
-                                  if (!email || !apiKey || !accountId) {
-                                    toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                    return;
-                                  }
-                                  setIsLoading(true);
-                                  try {
-                                    const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                    const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
-                                      method: "PUT",
-                                      headers: {
-                                        "X-Auth-Email": email,
-                                        "X-Auth-Key": apiKey,
-                                        "Content-Type": "text/plain",
-                                      },
-                                      body: value,
-                                    });
-                                    const json = await resp.json().catch(() => ({}));
-                                    if (resp.ok && json.success !== false) {
-                                      toast({ title: "保存成功" });
-                                      if (!kvKeys.find((k: any) => k.name === key)) {
-                                        setKvKeys([...kvKeys, { name: key }]);
-                                      }
-                                    } else {
-                                      toast({
-                                        title: "保存失败",
-                                        description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
-                                        variant: "destructive",
-                                      });
-                                    }
-                                  } catch (e: any) {
-                                    toast({ title: "保存失败", description: e.message, variant: "destructive" });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                              >
-                                保存键值对
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={async () => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
-                                  const valInput = document.getElementById("kv-value") as HTMLTextAreaElement | null;
-                                  const key = keyInput?.value?.trim() || "";
-                                  if (!key) {
-                                    toast({ title: "请输入键名", variant: "destructive" });
-                                    return;
-                                  }
-                                  const email = getCookie("cf_email") || cfEmail;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                  const accountId = zones[0]?.account?.id;
-                                  if (!email || !apiKey || !accountId) {
-                                    toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                    return;
-                                  }
-                                  setIsLoading(true);
-                                  try {
-                                    const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                    const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
-                                      method: "GET",
-                                      headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                    });
-                                    if (resp.ok) {
-                                      const text = await resp.text();
-                                      if (valInput) valInput.value = text;
-                                      toast({ title: "读取成功" });
-                                    } else {
-                                      const err = await resp.json().catch(() => ({}));
-                                      toast({
-                                        title: "读取失败",
-                                        description: err.errors?.[0]?.message || `HTTP ${resp.status}`,
-                                        variant: "destructive",
-                                      });
-                                    }
-                                  } catch (e: any) {
-                                    toast({ title: "读取失败", description: e.message, variant: "destructive" });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                              >
-                                读取值
-                              </Button>
-                              <Button
-                                variant="destructive"
-                                className="flex-1"
-                                onClick={async () => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
-                                  const key = keyInput?.value?.trim() || "";
-                                  if (!key) {
-                                    toast({ title: "请输入键名", variant: "destructive" });
-                                    return;
-                                  }
-                                  const email = getCookie("cf_email") || cfEmail;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                  const accountId = zones[0]?.account?.id;
-                                  if (!email || !apiKey || !accountId) {
-                                    toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                    return;
-                                  }
-                                  setIsLoading(true);
-                                  try {
-                                    const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                    const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
-                                      method: "DELETE",
-                                      headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                    });
-                                    const json = await resp.json().catch(() => ({}));
-                                    if (resp.ok && json.success !== false) {
-                                      toast({ title: "删除成功" });
-                                      setKvKeys(kvKeys.filter((k: any) => k.name !== key));
-                                      setSelectedKvKeys(selectedKvKeys.filter((n) => n !== key));
-                                    } else {
-                                      toast({
-                                        title: "删除失败",
-                                        description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
-                                        variant: "destructive",
-                                      });
-                                    }
-                                  } catch (e: any) {
-                                    toast({ title: "删除失败", description: e.message, variant: "destructive" });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                              >
-                                删除键
-                              </Button>
-                            </div>
-                          </div>
-
-                          <Separator />
-
-                          <div className="space-y-3">
-                            <h4 className="text-sm font-medium">批量操作</h4>
-                            <div className="flex gap-2">
-                              <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={async () => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  if (selectedKvKeys.length === 0 && kvKeys.length === 0) {
-                                    toast({ title: "无可导出的键" });
-                                    return;
-                                  }
-                                  const keysToExport = selectedKvKeys.length
-                                    ? selectedKvKeys
-                                    : kvKeys.map((k: any) => k.name);
-                                  const email = getCookie("cf_email") || cfEmail;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                  const accountId = zones[0]?.account?.id;
-                                  if (!email || !apiKey || !accountId) {
-                                    toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                    return;
-                                  }
-                                  setIsLoading(true);
-                                  try {
-                                    const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                    const entries: any[] = [];
-                                    for (const k of keysToExport) {
-                                      const resp = await fetch(`${base}/values/${encodeURIComponent(k)}`, {
-                                        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                      });
-                                      const val = resp.ok ? await resp.text() : "";
-                                      entries.push({ key: k, value: val });
-                                    }
-                                    const blob = new Blob([JSON.stringify(entries, null, 2)], {
-                                      type: "application/json",
-                                    });
-                                    const url = URL.createObjectURL(blob);
-                                    const a = document.createElement("a");
-                                    a.href = url;
-                                    a.download = `kv-export-${selectedKvNamespace}.json`;
-                                    document.body.appendChild(a);
-                                    a.click();
-                                    a.remove();
-                                    URL.revokeObjectURL(url);
-                                    toast({ title: "导出完成", description: `共导出 ${entries.length} 个键` });
-                                  } catch (e: any) {
-                                    toast({ title: "导出失败", description: e.message, variant: "destructive" });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                              >
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="16"
-                                  height="16"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  className="mr-2"
-                                >
-                                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                  <polyline points="7 10 12 15 17 10" />
-                                  <line x1="12" x2="12" y1="15" y2="3" />
-                                </svg>
-                                导出为 JSON
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={() => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  const input = document.createElement("input");
-                                  input.type = "file";
-                                  input.accept = "application/json";
-                                  input.onchange = async () => {
-                                    const file = input.files?.[0];
-                                    if (!file) return;
-                                    const text = await file.text();
-                                    let arr: any[] = [];
-                                    try {
-                                      arr = JSON.parse(text);
-                                    } catch {
-                                      toast({ title: "JSON 解析失败", variant: "destructive" });
-                                      return;
-                                    }
-                                    if (!Array.isArray(arr)) {
-                                      toast({ title: "格式错误，应为数组", variant: "destructive" });
-                                      return;
-                                    }
-                                    const email = getCookie("cf_email") || cfEmail;
-                                    const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                    const accountId = zones[0]?.account?.id;
-                                    if (!email || !apiKey || !accountId) {
-                                      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                      return;
-                                    }
-                                    setIsLoading(true);
-                                    try {
-                                      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                      let ok = 0;
-                                      for (const item of arr) {
-                                        if (!item?.key) continue;
-                                        const resp = await fetch(`${base}/values/${encodeURIComponent(item.key)}`, {
-                                          method: "PUT",
-                                          headers: {
-                                            "X-Auth-Email": email,
-                                            "X-Auth-Key": apiKey,
-                                            "Content-Type": "text/plain",
-                                          },
-                                          body: String(item.value ?? ""),
-                                        });
-                                        if (resp.ok) ok++;
-                                      }
-                                      toast({ title: "导入完成", description: `成功 ${ok} 个` });
-                                      // 刷新列表
-                                      const resp = await fetch(`${base}/keys?limit=1000`, {
-                                        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                      });
-                                      const j = await resp.json();
-                                      if (j?.result) setKvKeys(j.result);
-                                    } catch (e: any) {
-                                      toast({ title: "导入失败", description: e.message, variant: "destructive" });
-                                    } finally {
-                                      setIsLoading(false);
-                                    }
-                                  };
-                                  input.click();
-                                }}
-                              >
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="16"
-                                  height="16"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  className="mr-2"
-                                >
-                                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                  <polyline points="17 8 12 3 7 8" />
-                                  <line x1="12" x2="12" y1="3" y2="15" />
-                                </svg>
-                                从 JSON 导入
-                              </Button>
-                            </div>
-                            <p className="text-xs text-muted-foreground">
-                              导入格式：{`[{"key": "key1", "value": "value1"}, ...]`}
-                            </p>
-                          </div>
-
-                          <Separator />
-
-                          <div>
-                            <div className="flex justify-between items-center mb-3">
-                              <h4 className="text-sm font-medium">键列表</h4>
-                              <div className="flex items-center gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={async () => {
-                                    if (!selectedKvNamespace) {
-                                      toast({ title: "请选择命名空间", variant: "destructive" });
-                                      return;
-                                    }
-                                    const email = getCookie("cf_email") || cfEmail;
-                                    const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                    const accountId = zones[0]?.account?.id;
-                                    if (!email || !apiKey || !accountId) {
-                                      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                      return;
-                                    }
-                                    setIsLoading(true);
-                                    try {
-                                      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                      const resp = await fetch(`${base}/keys?limit=1000`, {
-                                        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                      });
-                                      const json = await resp.json();
-                                      if (resp.ok && json?.result) {
-                                        setKvKeys(json.result);
-                                        setSelectedKvKeys([]);
-                                        toast({ title: "已加载键列表", description: `共 ${json.result.length} 个` });
-                                      } else {
-                                        toast({
-                                          title: "加载失败",
-                                          description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
-                                          variant: "destructive",
-                                        });
-                                      }
-                                    } catch (e: any) {
-                                      toast({ title: "加载失败", description: e.message, variant: "destructive" });
-                                    } finally {
-                                      setIsLoading(false);
-                                    }
-                                  }}
-                                >
-                                  加载键列表
-                                </Button>
-                                <Button
-                                  variant="destructive"
-                                  size="sm"
-                                  disabled={selectedKvKeys.length === 0}
-                                  onClick={async () => {
-                                    if (!selectedKvNamespace || selectedKvKeys.length === 0) return;
-                                    const email = getCookie("cf_email") || cfEmail;
-                                    const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                    const accountId = zones[0]?.account?.id;
-                                    setIsLoading(true);
-                                    try {
-                                      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                      let ok = 0;
-                                      for (const k of selectedKvKeys) {
-                                        const resp = await fetch(`${base}/values/${encodeURIComponent(k)}`, {
-                                          method: "DELETE",
-                                          headers: { "X-Auth-Email": email!, "X-Auth-Key": apiKey! },
-                                        });
-                                        if (resp.ok) ok++;
-                                      }
-                                      setKvKeys(kvKeys.filter((i: any) => !selectedKvKeys.includes(i.name)));
-                                      setSelectedKvKeys([]);
-                                      toast({ title: "批量删除完成", description: `成功 ${ok} 个` });
-                                    } catch (e: any) {
-                                      toast({ title: "批量删除失败", description: e.message, variant: "destructive" });
-                                    } finally {
-                                      setIsLoading(false);
-                                    }
-                                  }}
-                                >
-                                  批量删除
-                                </Button>
-                              </div>
-                            </div>
-                            {!selectedKvNamespace ? (
-                              <div className="text-sm text-muted-foreground text-center py-4">
-                                选择命名空间后加载键列表
-                              </div>
-                            ) : kvKeys.length === 0 ? (
-                              <div className="text-sm text-muted-foreground text-center py-4">
-                                暂无键，点击“加载键列表”获取
-                              </div>
-                            ) : (
-                              <div className="border border-border/50 rounded-md divide-y max-h-64 overflow-auto">
-                                {kvKeys.map((item: any) => (
-                                  <label
-                                    key={item.name}
-                                    className="flex items-center gap-3 p-2 cursor-pointer hover:bg-muted/40"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedKvKeys.includes(item.name)}
-                                      onChange={(e) => {
-                                        const checked = e.target.checked;
-                                        setSelectedKvKeys((prev) =>
-                                          checked ? [...prev, item.name] : prev.filter((n) => n !== item.name),
-                                        );
-                                      }}
-                                    />
-                                    <span className="text-sm font-mono truncate">{item.name}</span>
-                                  </label>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+              <KvStorageView
+                kvNamespaces={kvNamespaces}
+                selectedKvNamespace={selectedKvNamespace}
+                kvKeys={kvKeys}
+                selectedKvKeys={selectedKvKeys}
+                isLoading={isLoading}
+                onCreateNamespace={handleCreateKvNamespace}
+                onRefreshNamespaces={handleRefreshKvNamespaces}
+                onDeleteNamespace={handleDeleteKvNamespace}
+                onNamespaceChange={setSelectedKvNamespace}
+                onSaveKeyValue={handleSaveKvKeyValue}
+                onReadValue={handleReadKvValue}
+                onDeleteKey={handleDeleteKvKey}
+                onExportKeys={handleExportKvKeys}
+                onImportKeys={handleImportKvKeys}
+                onLoadKeys={handleLoadKvKeys}
+                onDeleteSelectedKeys={handleDeleteSelectedKvKeys}
+                onToggleKeySelection={(keyName, checked) =>
+                  setSelectedKvKeys((prev) =>
+                    checked ? [...prev, keyName] : prev.filter((n) => n !== keyName),
+                  )
+                }
+              />
             )}
 
             {activeView === "certificates" && (
