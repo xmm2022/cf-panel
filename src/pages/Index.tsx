@@ -32,7 +32,6 @@ import {
   Menu,
   Key,
   Upload,
-  Gauge,
   ChevronDown,
   HardDrive,
   Network,
@@ -45,7 +44,6 @@ import {
   Folder,
   Play,
   Pause,
-  Info,
   Search,
   Code2,
   History,
@@ -54,7 +52,6 @@ import {
   Timer,
   Plus,
 } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 import { Switch } from "@/components/ui/switch";
 import { DeploymentForm } from "@/components/DeploymentForm";
 import AddDNSRecordForm from "@/components/AddDNSRecordForm";
@@ -77,6 +74,17 @@ import WorkerTemplateLibrary from "@/components/WorkerTemplateLibrary";
 import FeedbackLibrary from "@/components/FeedbackLibrary";
 import AutoOptimizationPanel from "@/components/AutoOptimizationPanel";
 import { WorkerAnalyticsPanel } from "@/components/WorkerAnalyticsPanel";
+import { AnalyticsView } from "@/components/index-page/analytics/AnalyticsView";
+import type { AnalyticsData, AnalyticsPeriod } from "@/components/index-page/analytics/analytics-types";
+import { PagesView } from "@/components/index-page/pages/PagesView";
+import { CreatePagesProjectDialog } from "@/components/index-page/pages/CreatePagesProjectDialog";
+import type { PagesDeploymentSummary, PagesProjectSummary } from "@/components/index-page/pages/pages-types";
+import { KvStorageView } from "@/components/index-page/kv-storage/KvStorageView";
+import {
+  buildKvExportFileName,
+  parseKvImportJson,
+} from "@/components/index-page/kv-storage/kv-storage-actions";
+import type { KvImportEntry } from "@/components/index-page/kv-storage/kv-storage-types";
 import { Separator } from "@/components/ui/separator";
 import spiderIcon from "@/assets/spider-icon.png";
 import {
@@ -214,96 +222,6 @@ interface KVKeySummary {
   name: string;
 }
 
-interface PagesDomain {
-  name: string;
-}
-
-interface PagesProjectSourceConfig {
-  owner?: string;
-  repo_name?: string;
-}
-
-interface PagesProjectSource {
-  type?: string;
-  config?: PagesProjectSourceConfig;
-}
-
-interface PagesStage {
-  name?: string;
-  status?: string;
-}
-
-interface PagesProductionDeployment {
-  environment?: string;
-  url?: string;
-  latest_stage?: PagesStage;
-  created_on?: string;
-}
-
-interface PagesProjectSummary {
-  id?: string;
-  name: string;
-  subdomain?: string;
-  created_on: string;
-  production_deployment?: PagesProductionDeployment;
-  domains?: Array<string | PagesDomain>;
-  source?: PagesProjectSource;
-}
-
-interface PagesDeploymentBuildConfig {
-  build_command?: string;
-}
-
-interface PagesDeploymentTriggerMetadata {
-  commit_message?: string;
-  branch?: string;
-}
-
-interface PagesDeploymentTrigger {
-  metadata?: PagesDeploymentTriggerMetadata;
-}
-
-interface PagesDeploymentSummary {
-  id: string;
-  environment?: string;
-  latest_stage?: PagesStage;
-  url?: string;
-  created_on?: string;
-  build_config?: PagesDeploymentBuildConfig;
-  deployment_trigger?: PagesDeploymentTrigger;
-}
-
-interface AnalyticsGroup {
-  dimensions: {
-    date: string;
-    [key: string]: string | undefined;
-  };
-  sum?: {
-    requests?: number;
-    bytes?: number;
-    threats?: number;
-    cachedRequests?: number;
-    cachedBytes?: number;
-    encryptedRequests?: number;
-    encryptedBytes?: number;
-    pageViews?: number;
-  };
-  uniq?: {
-    uniques?: number;
-  };
-}
-
-interface ZoneAnalytics {
-  httpRequests1dGroups?: AnalyticsGroup[];
-  deviceTypeGroups?: AnalyticsGroup[];
-}
-
-interface AnalyticsData {
-  viewer?: {
-    zones?: ZoneAnalytics[];
-  };
-}
-
 interface ZoneSetting {
   id: string;
   value: string | number | { strict_transport_security?: { enabled?: boolean } };
@@ -438,7 +356,6 @@ const Index = () => {
   const [selectedPagesProject, setSelectedPagesProject] = useState<string>("");
   const [pagesDeployments, setPagesDeployments] = useState<PagesDeploymentSummary[]>([]);
   const [isLoadingPages, setIsLoadingPages] = useState(false);
-  const [pagesProjectDetail, setPagesProjectDetail] = useState<PagesProjectSummary | null>(null);
   const [showPagesDeployments, setShowPagesDeployments] = useState(false);
   // 新建 Pages 项目对话框
   const [createPagesProjectOpen, setCreatePagesProjectOpen] = useState(false);
@@ -488,7 +405,7 @@ const Index = () => {
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   // 创建 D1 数据库对话框
   const [showCreateD1DatabaseForm, setShowCreateD1DatabaseForm] = useState(false);
-  const [analyticsPeriod, setAnalyticsPeriod] = useState<"24h" | "7d" | "30d">("7d");
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<AnalyticsPeriod>("7d");
   const [sslMode, setSslMode] = useState<string>("");
   const [alwaysUseHttps, setAlwaysUseHttps] = useState<boolean>(false);
   const [automaticHttpsRewrites, setAutomaticHttpsRewrites] = useState<boolean>(false);
@@ -563,6 +480,8 @@ const Index = () => {
     if (activeView === "analytics" && selectedZone) {
       loadAnalytics(selectedZone);
     }
+    // loader callback stabilization is deferred to Task 8
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView, selectedZone]);
 
   // 首次进入 Pages 视图时加载项目列表
@@ -1123,6 +1042,499 @@ const Index = () => {
         title: "加载失败",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCreateKvNamespace = async (namespaceName: string) => {
+    if (!namespaceName) {
+      toast({
+        title: "请输入命名空间名称",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    if (!email || !apiKey) {
+      toast({
+        title: "未找到 Cloudflare 凭证",
+        description: "请先登录 Cloudflare 账号",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const accountId = zones[0]?.account?.id;
+      if (!accountId) {
+        toast({
+          title: "无法获取账户 ID",
+          description: "请先选择一个域名",
+          variant: "destructive",
+        });
+        setIsLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
+        body: {
+          action: "create_kv_namespace",
+          email,
+          apiKey,
+          accountId,
+          data: {
+            title: namespaceName,
+          },
+        },
+      });
+
+      if (error) throw error;
+
+      if (data.success) {
+        toast({
+          title: "命名空间创建成功",
+        });
+        const input = document.getElementById("kv-namespace-name") as HTMLInputElement | null;
+        if (input) input.value = "";
+        // 重新加载命名空间列表
+        loadKvNamespaces();
+      } else {
+        toast({
+          title: "创建失败",
+          description: data.errors?.[0]?.message || "未知错误",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Create namespace error:", error);
+      toast({
+        title: "创建失败",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRefreshKvNamespaces = async () => {
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    if (!email || !apiKey) {
+      toast({
+        title: "未找到 Cloudflare 凭证",
+        description: "请先登录 Cloudflare 账号",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const accountId = zones[0]?.account?.id;
+    if (!accountId) {
+      toast({
+        title: "无法获取账户 ID",
+        description: "请先选择一个域名",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
+        body: {
+          action: "list_kv_namespaces",
+          email,
+          apiKey,
+          accountId,
+        },
+      });
+
+      if (error) throw error;
+
+      if (data.success) {
+        setKvNamespaces(data.result || []);
+        toast({
+          title: `列表已刷新 (${data.result?.length || 0} 个命名空间)`,
+        });
+      } else {
+        toast({
+          title: "加载失败",
+          description: data.errors?.[0]?.message || "未知错误",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Load namespaces error:", error);
+      toast({
+        title: "加载失败",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteKvNamespace = async (namespace: KVNamespaceSummary) => {
+    if (
+      !confirm(
+        `确定要删除命名空间 "${namespace.title}" 吗？此操作将删除该命名空间下的所有键值对，且无法恢复。`,
+      )
+    ) {
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
+        body: {
+          action: "delete_kv_namespace",
+          email,
+          apiKey,
+          accountId,
+          namespaceId: namespace.id,
+        },
+      });
+
+      if (error) throw error;
+
+      if (data.success) {
+        toast({ title: "命名空间删除成功" });
+        setKvNamespaces(kvNamespaces.filter((n) => n.id !== namespace.id));
+        if (selectedKvNamespace === namespace.id) {
+          setSelectedKvNamespace("");
+          setKvKeys([]);
+        }
+      } else {
+        toast({
+          title: "删除失败",
+          description: data.errors?.[0]?.message || "未知错误",
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({
+        title: "删除失败",
+        description: e.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSaveKvKeyValue = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
+    const valInput = document.getElementById("kv-value") as HTMLTextAreaElement | null;
+    const key = keyInput?.value?.trim() || "";
+    const value = valInput?.value || "";
+    if (!key) {
+      toast({ title: "请输入键名", variant: "destructive" });
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        headers: {
+          "X-Auth-Email": email,
+          "X-Auth-Key": apiKey,
+          "Content-Type": "text/plain",
+        },
+        body: value,
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok && json.success !== false) {
+        toast({ title: "保存成功" });
+        if (!kvKeys.find((k) => k.name === key)) {
+          setKvKeys([...kvKeys, { name: key }]);
+        }
+      } else {
+        toast({
+          title: "保存失败",
+          description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({ title: "保存失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleReadKvValue = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
+    const valInput = document.getElementById("kv-value") as HTMLTextAreaElement | null;
+    const key = keyInput?.value?.trim() || "";
+    if (!key) {
+      toast({ title: "请输入键名", variant: "destructive" });
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
+        method: "GET",
+        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+      });
+      if (resp.ok) {
+        const text = await resp.text();
+        if (valInput) valInput.value = text;
+        toast({ title: "读取成功" });
+      } else {
+        const err = await resp.json().catch(() => ({}));
+        toast({
+          title: "读取失败",
+          description: err.errors?.[0]?.message || `HTTP ${resp.status}`,
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({ title: "读取失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteKvKey = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
+    const key = keyInput?.value?.trim() || "";
+    if (!key) {
+      toast({ title: "请输入键名", variant: "destructive" });
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
+        method: "DELETE",
+        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok && json.success !== false) {
+        toast({ title: "删除成功" });
+        setKvKeys(kvKeys.filter((k) => k.name !== key));
+        setSelectedKvKeys(selectedKvKeys.filter((n) => n !== key));
+      } else {
+        toast({
+          title: "删除失败",
+          description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({ title: "删除失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleExportKvKeys = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    if (selectedKvKeys.length === 0 && kvKeys.length === 0) {
+      toast({ title: "无可导出的键" });
+      return;
+    }
+    const keysToExport = selectedKvKeys.length
+      ? selectedKvKeys
+      : kvKeys.map((k) => k.name);
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const entries: KvImportEntry[] = [];
+      for (const k of keysToExport) {
+        const resp = await fetch(`${base}/values/${encodeURIComponent(k)}`, {
+          headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+        });
+        const val = resp.ok ? await resp.text() : "";
+        entries.push({ key: k, value: val });
+      }
+      const blob = new Blob([JSON.stringify(entries, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = buildKvExportFileName(selectedKvNamespace);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast({ title: "导出完成", description: `共导出 ${entries.length} 个键` });
+    } catch (e: any) {
+      toast({ title: "导出失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleImportKvKeys = async (file: File) => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const text = await file.text();
+    let entries: KvImportEntry[];
+    try {
+      entries = parseKvImportJson(text);
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : "";
+      if (message.includes("数组")) {
+        toast({ title: "格式错误，应为数组", variant: "destructive" });
+      } else {
+        toast({ title: "JSON 解析失败", variant: "destructive" });
+      }
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      let ok = 0;
+      for (const item of entries) {
+        const resp = await fetch(`${base}/values/${encodeURIComponent(item.key)}`, {
+          method: "PUT",
+          headers: {
+            "X-Auth-Email": email,
+            "X-Auth-Key": apiKey,
+            "Content-Type": "text/plain",
+          },
+          body: item.value,
+        });
+        if (resp.ok) ok++;
+      }
+      toast({ title: "导入完成", description: `成功 ${ok} 个` });
+      // 刷新列表
+      const resp = await fetch(`${base}/keys?limit=1000`, {
+        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+      });
+      const j = await resp.json();
+      if (j?.result) setKvKeys(j.result);
+    } catch (e: any) {
+      toast({ title: "导入失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLoadKvKeys = async () => {
+    if (!selectedKvNamespace) {
+      toast({ title: "请选择命名空间", variant: "destructive" });
+      return;
+    }
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    if (!email || !apiKey || !accountId) {
+      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      const resp = await fetch(`${base}/keys?limit=1000`, {
+        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
+      });
+      const json = await resp.json();
+      if (resp.ok && json?.result) {
+        setKvKeys(json.result);
+        setSelectedKvKeys([]);
+        toast({ title: "已加载键列表", description: `共 ${json.result.length} 个` });
+      } else {
+        toast({
+          title: "加载失败",
+          description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
+          variant: "destructive",
+        });
+      }
+    } catch (e: any) {
+      toast({ title: "加载失败", description: e.message, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteSelectedKvKeys = async () => {
+    if (!selectedKvNamespace || selectedKvKeys.length === 0) return;
+    const email = getCookie("cf_email") || cfEmail;
+    const apiKey = getCookie("cf_api_key") || cfApiKey;
+    const accountId = zones[0]?.account?.id;
+    setIsLoading(true);
+    try {
+      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
+      let ok = 0;
+      for (const k of selectedKvKeys) {
+        const resp = await fetch(`${base}/values/${encodeURIComponent(k)}`, {
+          method: "DELETE",
+          headers: { "X-Auth-Email": email!, "X-Auth-Key": apiKey! },
+        });
+        if (resp.ok) ok++;
+      }
+      setKvKeys(kvKeys.filter((i) => !selectedKvKeys.includes(i.name)));
+      setSelectedKvKeys([]);
+      toast({ title: "批量删除完成", description: `成功 ${ok} 个` });
+    } catch (e: any) {
+      toast({ title: "批量删除失败", description: e.message, variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -2493,7 +2905,7 @@ const Index = () => {
     }
   };
 
-  const loadAnalytics = async (zoneId: string, period: "24h" | "7d" | "30d" = analyticsPeriod) => {
+  const loadAnalytics = async (zoneId: string, period: AnalyticsPeriod = analyticsPeriod) => {
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     if (!email || !apiKey) return;
@@ -5814,1339 +6226,22 @@ const Index = () => {
             )}
 
             {activeView === "analytics" && selectedZone && (
-              <div className="max-w-6xl mx-auto">
-                <div className="mb-6 flex items-center justify-between">
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      setActiveView("zones");
-                      setSelectedZone("");
-                      setSelectedZoneName("");
-                    }}
-                  >
-                    ← 返回域名列表
-                  </Button>
-                  <Button onClick={() => loadAnalytics(selectedZone)} disabled={isLoading}>
-                    {isLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                    刷新数据
-                  </Button>
-                </div>
-
-                <Card className="shadow-card mb-6">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="flex items-center gap-2">
-                          <LayoutDashboard className="w-5 h-5" />
-                          分析统计
-                        </CardTitle>
-                        <CardDescription>
-                          当前域名: {selectedZoneName} -{" "}
-                          {analyticsPeriod === "24h"
-                            ? "最近 24 小时"
-                            : analyticsPeriod === "7d"
-                              ? "最近 7 天"
-                              : "最近 30 天"}
-                        </CardDescription>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button
-                          variant={analyticsPeriod === "24h" ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => {
-                            setAnalyticsPeriod("24h");
-                            loadAnalytics(selectedZone, "24h");
-                          }}
-                          disabled={isLoading}
-                        >
-                          24小时
-                        </Button>
-                        <Button
-                          variant={analyticsPeriod === "7d" ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => {
-                            setAnalyticsPeriod("7d");
-                            loadAnalytics(selectedZone, "7d");
-                          }}
-                          disabled={isLoading}
-                        >
-                          7天
-                        </Button>
-                        <Button
-                          variant={analyticsPeriod === "30d" ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => {
-                            setAnalyticsPeriod("30d");
-                            loadAnalytics(selectedZone, "30d");
-                          }}
-                          disabled={isLoading}
-                        >
-                          30天
-                        </Button>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-6">
-                      {/* 关键指标概览 */}
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        <div className="p-4 border border-border/50 rounded-lg bg-gradient-to-br from-blue-500/5 to-blue-500/10">
-                          <div className="text-sm text-muted-foreground mb-1">总请求数</div>
-                          <div className="text-2xl font-bold">
-                            {analyticsData
-                              ? analyticsData.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ?.reduce((sum: number, day: any) => sum + (day.sum?.requests || 0), 0)
-                                  .toLocaleString()
-                              : "-"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            {analyticsPeriod === "24h"
-                              ? "最近 24 小时"
-                              : analyticsPeriod === "7d"
-                                ? "最近 7 天"
-                                : "最近 30 天"}
-                          </div>
-                        </div>
-                        <div className="p-4 border border-border/50 rounded-lg bg-gradient-to-br from-green-500/5 to-green-500/10">
-                          <div className="text-sm text-muted-foreground mb-1">带宽使用</div>
-                          <div className="text-2xl font-bold">
-                            {analyticsData
-                              ? (
-                                  (analyticsData.viewer?.zones?.[0]?.httpRequests1dGroups?.reduce(
-                                    (sum: number, day: any) => sum + (day.sum?.bytes || 0),
-                                    0,
-                                  ) || 0) /
-                                  1024 /
-                                  1024 /
-                                  1024
-                                ).toFixed(2) + " GB"
-                              : "-"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            {analyticsPeriod === "24h"
-                              ? "最近 24 小时"
-                              : analyticsPeriod === "7d"
-                                ? "最近 7 天"
-                                : "最近 30 天"}
-                          </div>
-                        </div>
-                        <div className="p-4 border border-border/50 rounded-lg bg-gradient-to-br from-purple-500/5 to-purple-500/10">
-                          <div className="text-sm text-muted-foreground mb-1">独立访客</div>
-                          <div className="text-2xl font-bold">
-                            {analyticsData
-                              ? Math.max(
-                                  ...(analyticsData.viewer?.zones?.[0]?.httpRequests1dGroups?.map(
-                                    (day: any) => day.uniq?.uniques || 0,
-                                  ) || [0]),
-                                ).toLocaleString()
-                              : "-"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">峰值</div>
-                        </div>
-                        <div className="p-4 border border-border/50 rounded-lg bg-gradient-to-br from-red-500/5 to-red-500/10">
-                          <div className="text-sm text-muted-foreground mb-1">威胁拦截</div>
-                          <div className="text-2xl font-bold">
-                            {analyticsData
-                              ? analyticsData.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ?.reduce((sum: number, day: any) => sum + (day.sum?.threats || 0), 0)
-                                  .toLocaleString()
-                              : "-"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            {analyticsPeriod === "24h"
-                              ? "最近 24 小时"
-                              : analyticsPeriod === "7d"
-                                ? "最近 7 天"
-                                : "最近 30 天"}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* 缓存性能指标 */}
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <div className="text-sm text-muted-foreground mb-1">缓存命中率</div>
-                          <div className="text-2xl font-bold text-green-600">
-                            {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                              ? (() => {
-                                  const groups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                  const cachedRequests = groups.reduce(
-                                    (sum: number, day: any) => sum + (day.sum?.cachedRequests || 0),
-                                    0,
-                                  );
-                                  const totalRequests = groups.reduce(
-                                    (sum: number, day: any) => sum + (day.sum?.requests || 0),
-                                    0,
-                                  );
-                                  return totalRequests > 0
-                                    ? ((cachedRequests / totalRequests) * 100).toFixed(1) + "%"
-                                    : "0%";
-                                })()
-                              : "-"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">缓存/总请求</div>
-                        </div>
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <div className="text-sm text-muted-foreground mb-1">缓存字节数</div>
-                          <div className="text-2xl font-bold text-blue-600">
-                            {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                              ? (
-                                  (analyticsData.viewer.zones[0].httpRequests1dGroups.reduce(
-                                    (sum: number, day: any) => sum + (day.sum?.cachedBytes || 0),
-                                    0,
-                                  ) || 0) /
-                                  1024 /
-                                  1024 /
-                                  1024
-                                ).toFixed(2) + " GB"
-                              : "-"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">已缓存数据</div>
-                        </div>
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <div className="text-sm text-muted-foreground mb-1">带宽节省</div>
-                          <div className="text-2xl font-bold text-purple-600">
-                            {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                              ? (() => {
-                                  const groups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                  const cachedBytes = groups.reduce(
-                                    (sum: number, day: any) => sum + (day.sum?.cachedBytes || 0),
-                                    0,
-                                  );
-                                  const totalBytes = groups.reduce(
-                                    (sum: number, day: any) => sum + (day.sum?.bytes || 0),
-                                    0,
-                                  );
-                                  return totalBytes > 0 ? ((cachedBytes / totalBytes) * 100).toFixed(1) + "%" : "0%";
-                                })()
-                              : "-"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">缓存/总带宽</div>
-                        </div>
-                      </div>
-
-                      {/* 流量趋势图 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4">每日流量统计</h3>
-                        {analyticsData && analyticsData.viewer?.zones?.[0]?.httpRequests1dGroups?.length > 0 ? (
-                          <div className="space-y-2">
-                            {analyticsData.viewer.zones[0].httpRequests1dGroups
-                              .sort((a: any, b: any) => a.dimensions.date.localeCompare(b.dimensions.date))
-                              .map((day: any, idx: number) => (
-                                <div
-                                  key={day.dimensions.date}
-                                  className="flex items-center justify-between py-2 border-b border-border/30 last:border-0"
-                                >
-                                  <span className="text-sm font-medium">{day.dimensions.date}</span>
-                                  <div className="flex gap-4 text-sm flex-wrap">
-                                    <span className="text-muted-foreground">
-                                      请求:{" "}
-                                      <span className="font-medium text-foreground">
-                                        {day.sum.requests.toLocaleString()}
-                                      </span>
-                                    </span>
-                                    <span className="text-muted-foreground">
-                                      带宽:{" "}
-                                      <span className="font-medium text-foreground">
-                                        {(day.sum.bytes / 1024 / 1024).toFixed(2)} MB
-                                      </span>
-                                    </span>
-                                    <span className="text-muted-foreground">
-                                      访客: <span className="font-medium text-foreground">{day.uniq.uniques}</span>
-                                    </span>
-                                    <span className="text-muted-foreground">
-                                      缓存:{" "}
-                                      <span className="font-medium text-green-600">
-                                        {(((day.sum.cachedRequests || 0) / day.sum.requests) * 100).toFixed(0)}%
-                                      </span>
-                                    </span>
-                                  </div>
-                                </div>
-                              ))}
-                          </div>
-                        ) : (
-                          <div className="h-64 flex items-center justify-center bg-muted/30 rounded">
-                            <div className="text-center text-muted-foreground">
-                              <LayoutDashboard className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                              <p className="text-sm">点击"刷新数据"按钮获取分析数据</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 请求类型分析 */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <h3 className="font-medium mb-4">请求类型统计</h3>
-                          <div className="space-y-3">
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">总请求数</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                                  <>
-                                    {analyticsData.viewer.zones[0].httpRequests1dGroups
-                                      .reduce((sum: number, day: any) => sum + (day.sum?.requests || 0), 0)
-                                      .toLocaleString()}
-                                    <span className="text-xs text-muted-foreground ml-2">(100%)</span>
-                                  </>
-                                ) : (
-                                  "0"
-                                )}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">缓存命中</span>
-                              <span className="font-medium text-green-600">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (() => {
-                                      const groups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const cached = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.cachedRequests || 0),
-                                        0,
-                                      );
-                                      const total = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.requests || 0),
-                                        0,
-                                      );
-                                      const percentage = total > 0 ? ((cached / total) * 100).toFixed(1) : "0";
-                                      return (
-                                        <>
-                                          {cached.toLocaleString()}
-                                          <span className="text-xs text-muted-foreground ml-2">({percentage}%)</span>
-                                        </>
-                                      );
-                                    })()
-                                  : "0"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">未缓存</span>
-                              <span className="font-medium text-orange-600">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (() => {
-                                      const groups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const total = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.requests || 0),
-                                        0,
-                                      );
-                                      const cached = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.cachedRequests || 0),
-                                        0,
-                                      );
-                                      const uncached = total - cached;
-                                      const percentage = total > 0 ? ((uncached / total) * 100).toFixed(1) : "0";
-                                      return (
-                                        <>
-                                          {uncached.toLocaleString()}
-                                          <span className="text-xs text-muted-foreground ml-2">({percentage}%)</span>
-                                        </>
-                                      );
-                                    })()
-                                  : "0"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">加密请求</span>
-                              <span className="font-medium text-blue-600">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (() => {
-                                      const groups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const encrypted = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.encryptedRequests || 0),
-                                        0,
-                                      );
-                                      const total = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.requests || 0),
-                                        0,
-                                      );
-                                      const percentage = total > 0 ? ((encrypted / total) * 100).toFixed(1) : "0";
-                                      return (
-                                        <>
-                                          {encrypted.toLocaleString()}
-                                          <span className="text-xs text-muted-foreground ml-2">({percentage}%)</span>
-                                        </>
-                                      );
-                                    })()
-                                  : "0"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm text-muted-foreground">页面浏览量</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (() => {
-                                      const groups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const pageViews = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.pageViews || 0),
-                                        0,
-                                      );
-                                      const total = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.requests || 0),
-                                        0,
-                                      );
-                                      const percentage = total > 0 ? ((pageViews / total) * 100).toFixed(1) : "0";
-                                      return (
-                                        <>
-                                          {pageViews.toLocaleString()}
-                                          <span className="text-xs text-muted-foreground ml-2">({percentage}%)</span>
-                                        </>
-                                      );
-                                    })()
-                                  : "0"}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <h3 className="font-medium mb-4">威胁分析</h3>
-                          <div className="space-y-3">
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">总威胁</span>
-                              <span className="font-medium text-red-600">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ?.reduce((sum: number, day: any) => sum + (day.sum?.threats || 0), 0)
-                                  .toLocaleString() || "0"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">威胁率</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (() => {
-                                      const totalRequests = analyticsData.viewer.zones[0].httpRequests1dGroups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.requests || 0),
-                                        0,
-                                      );
-                                      const totalThreats = analyticsData.viewer.zones[0].httpRequests1dGroups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.threats || 0),
-                                        0,
-                                      );
-                                      return totalRequests > 0
-                                        ? ((totalThreats / totalRequests) * 100).toFixed(2) + "%"
-                                        : "0%";
-                                    })()
-                                  : "0%"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">最高威胁日</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups?.length > 0
-                                  ? (() => {
-                                      const days = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const maxDay = days.reduce(
-                                        (max: any, day: any) =>
-                                          (day.sum?.threats || 0) > (max.sum?.threats || 0) ? day : max,
-                                        days[0],
-                                      );
-                                      return maxDay?.sum?.threats > 0 ? maxDay.dimensions?.date : "无";
-                                    })()
-                                  : "无"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm text-muted-foreground">平均每日威胁</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups?.length > 0
-                                  ? (() => {
-                                      const days = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const totalThreats = days.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.threats || 0),
-                                        0,
-                                      );
-                                      return Math.round(totalThreats / days.length).toLocaleString();
-                                    })()
-                                  : "0"}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* 带宽和内容分析 */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <h3 className="font-medium mb-4">带宽统计</h3>
-                          <div className="space-y-3">
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">总带宽</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (
-                                      (analyticsData.viewer.zones[0].httpRequests1dGroups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.bytes || 0),
-                                        0,
-                                      ) || 0) /
-                                      1024 /
-                                      1024 /
-                                      1024
-                                    ).toFixed(2) + " GB"
-                                  : "-"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">缓存带宽</span>
-                              <span className="font-medium text-green-600">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (
-                                      (analyticsData.viewer.zones[0].httpRequests1dGroups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.cachedBytes || 0),
-                                        0,
-                                      ) || 0) /
-                                      1024 /
-                                      1024 /
-                                      1024
-                                    ).toFixed(2) + " GB"
-                                  : "-"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">加密带宽</span>
-                              <span className="font-medium text-blue-600">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (
-                                      (analyticsData.viewer.zones[0].httpRequests1dGroups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.encryptedBytes || 0),
-                                        0,
-                                      ) || 0) /
-                                      1024 /
-                                      1024 /
-                                      1024
-                                    ).toFixed(2) + " GB"
-                                  : "-"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm text-muted-foreground">平均每日带宽</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups?.length > 0
-                                  ? (() => {
-                                      const days = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const totalBytes = days.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.bytes || 0),
-                                        0,
-                                      );
-                                      return (totalBytes / days.length / 1024 / 1024 / 1024).toFixed(2) + " GB";
-                                    })()
-                                  : "-"}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <h3 className="font-medium mb-4">性能指标</h3>
-                          <div className="space-y-3">
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">平均请求大小</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (() => {
-                                      const groups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const totalBytes = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.bytes || 0),
-                                        0,
-                                      );
-                                      const totalRequests = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.requests || 0),
-                                        0,
-                                      );
-                                      return totalRequests > 0
-                                        ? (totalBytes / totalRequests / 1024).toFixed(2) + " KB"
-                                        : "-";
-                                    })()
-                                  : "-"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">SSL/TLS 加密率</span>
-                              <span className="font-medium text-blue-600">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (() => {
-                                      const groups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                      const encryptedRequests = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.encryptedRequests || 0),
-                                        0,
-                                      );
-                                      const totalRequests = groups.reduce(
-                                        (sum: number, day: any) => sum + (day.sum?.requests || 0),
-                                        0,
-                                      );
-                                      return totalRequests > 0
-                                        ? ((encryptedRequests / totalRequests) * 100).toFixed(1) + "%"
-                                        : "0%";
-                                    })()
-                                  : "-"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center pb-2 border-b border-border/30">
-                              <span className="text-sm text-muted-foreground">峰值日请求</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? Math.max(
-                                      ...analyticsData.viewer.zones[0].httpRequests1dGroups.map(
-                                        (day: any) => day.sum?.requests || 0,
-                                      ),
-                                    ).toLocaleString()
-                                  : "-"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm text-muted-foreground">峰值日带宽</span>
-                              <span className="font-medium">
-                                {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups
-                                  ? (
-                                      Math.max(
-                                        ...analyticsData.viewer.zones[0].httpRequests1dGroups.map(
-                                          (day: any) => day.sum?.bytes || 0,
-                                        ),
-                                      ) /
-                                      1024 /
-                                      1024 /
-                                      1024
-                                    ).toFixed(2) + " GB"
-                                  : "-"}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* HTTP 状态码分布 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4 flex items-center gap-2">
-                          <Gauge className="w-4 h-4" />
-                          HTTP 状态码分布
-                        </h3>
-                        {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                          <div>
-                            {(() => {
-                              // 从免费计划的 responseStatusMap 获取真实状态码数据
-                              const httpGroups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                              let stats = { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
-                              let total = 0;
-
-                              // 汇总所有天的状态码数据
-                              httpGroups.forEach((day: any) => {
-                                const statusMap = day.sum?.responseStatusMap;
-                                if (statusMap && Array.isArray(statusMap)) {
-                                  statusMap.forEach((item: any) => {
-                                    const code = parseInt(item.edgeResponseStatus || "0");
-                                    const count = item.requests || 0;
-                                    total += count;
-
-                                    if (code >= 200 && code < 300) stats["2xx"] += count;
-                                    else if (code >= 300 && code < 400) stats["3xx"] += count;
-                                    else if (code >= 400 && code < 500) stats["4xx"] += count;
-                                    else if (code >= 500 && code < 600) stats["5xx"] += count;
-                                  });
-                                }
-                              });
-
-                              // 如果没有 responseStatusMap 数据，使用总请求数作为估算
-                              if (total === 0) {
-                                total = httpGroups.reduce((sum: number, day: any) => sum + (day.sum?.requests || 0), 0);
-                                stats = {
-                                  "2xx": Math.round(total * 0.85),
-                                  "3xx": Math.round(total * 0.08),
-                                  "4xx": Math.round(total * 0.05),
-                                  "5xx": Math.round(total * 0.02),
-                                };
-                              }
-
-                              const hasRealData =
-                                total > 0 && stats["2xx"] + stats["3xx"] + stats["4xx"] + stats["5xx"] > 0;
-
-                              return (
-                                <>
-                                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                                    <div className="p-3 border border-green-500/30 bg-green-500/5 rounded-lg">
-                                      <div className="text-xs text-muted-foreground mb-1">2xx 成功</div>
-                                      <div className="text-xl font-bold text-green-600">
-                                        {stats["2xx"].toLocaleString()}
-                                      </div>
-                                      <div className="text-xs text-green-600 mt-1">
-                                        {total > 0 ? ((stats["2xx"] / total) * 100).toFixed(1) : "0"}%
-                                      </div>
-                                    </div>
-                                    <div className="p-3 border border-blue-500/30 bg-blue-500/5 rounded-lg">
-                                      <div className="text-xs text-muted-foreground mb-1">3xx 重定向</div>
-                                      <div className="text-xl font-bold text-blue-600">
-                                        {stats["3xx"].toLocaleString()}
-                                      </div>
-                                      <div className="text-xs text-blue-600 mt-1">
-                                        {total > 0 ? ((stats["3xx"] / total) * 100).toFixed(1) : "0"}%
-                                      </div>
-                                    </div>
-                                    <div className="p-3 border border-orange-500/30 bg-orange-500/5 rounded-lg">
-                                      <div className="text-xs text-muted-foreground mb-1">4xx 客户端错误</div>
-                                      <div className="text-xl font-bold text-orange-600">
-                                        {stats["4xx"].toLocaleString()}
-                                      </div>
-                                      <div className="text-xs text-orange-600 mt-1">
-                                        {total > 0 ? ((stats["4xx"] / total) * 100).toFixed(1) : "0"}%
-                                      </div>
-                                    </div>
-                                    <div className="p-3 border border-red-500/30 bg-red-500/5 rounded-lg">
-                                      <div className="text-xs text-muted-foreground mb-1">5xx 服务器错误</div>
-                                      <div className="text-xl font-bold text-red-600">
-                                        {stats["5xx"].toLocaleString()}
-                                      </div>
-                                      <div className="text-xs text-red-600 mt-1">
-                                        {total > 0 ? ((stats["5xx"] / total) * 100).toFixed(1) : "0"}%
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="h-64">
-                                    <BarChart
-                                      width={700}
-                                      height={240}
-                                      data={[
-                                        { status: "2xx 成功", count: stats["2xx"], fill: "hsl(142, 76%, 36%)" },
-                                        { status: "3xx 重定向", count: stats["3xx"], fill: "hsl(221, 83%, 53%)" },
-                                        { status: "4xx 错误", count: stats["4xx"], fill: "hsl(25, 95%, 53%)" },
-                                        { status: "5xx 错误", count: stats["5xx"], fill: "hsl(0, 84%, 60%)" },
-                                      ]}
-                                      margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-                                    >
-                                      <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-                                      <XAxis dataKey="status" tick={{ fontSize: 12 }} />
-                                      <YAxis tick={{ fontSize: 12 }} />
-                                      <Tooltip
-                                        contentStyle={{
-                                          backgroundColor: "hsl(var(--background))",
-                                          border: "1px solid hsl(var(--border))",
-                                          borderRadius: "6px",
-                                        }}
-                                        formatter={(value: number) => [value.toLocaleString(), "请求数"]}
-                                      />
-                                      <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                                        {[
-                                          { status: "2xx 成功", count: stats["2xx"], fill: "hsl(142, 76%, 36%)" },
-                                          { status: "3xx 重定向", count: stats["3xx"], fill: "hsl(221, 83%, 53%)" },
-                                          { status: "4xx 错误", count: stats["4xx"], fill: "hsl(25, 95%, 53%)" },
-                                          { status: "5xx 错误", count: stats["5xx"], fill: "hsl(0, 84%, 60%)" },
-                                        ].map((entry, index) => (
-                                          <rect key={`cell-${index}`} fill={entry.fill} />
-                                        ))}
-                                      </Bar>
-                                    </BarChart>
-                                  </div>
-                                  {!hasRealData && (
-                                    <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                                      <p className="text-sm text-muted-foreground flex items-center gap-2">
-                                        <Info className="w-4 h-4 text-blue-600" />
-                                        注意：当前显示基于总请求数的估算。状态码详细数据可能因 API 限制无法获取。
-                                      </p>
-                                    </div>
-                                  )}
-                                </>
-                              );
-                            })()}
-                          </div>
-                        ) : (
-                          <div className="h-64 flex items-center justify-center bg-muted/30 rounded">
-                            <div className="text-center text-muted-foreground">
-                              <Gauge className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                              <p className="text-sm">点击"刷新数据"按钮获取分析数据</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 请求国别分布 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4 flex items-center gap-2">
-                          <Globe className="w-4 h-4" />
-                          请求国别分布
-                        </h3>
-                        {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                          <div>
-                            {(() => {
-                              // 从免费计划的 countryMap 获取真实国家数据
-                              const httpGroups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                              const countryStats: Record<string, number> = {};
-
-                              // 汇总所有天的国家数据
-                              httpGroups.forEach((day: any) => {
-                                const countryMap = day.sum?.countryMap;
-                                if (countryMap && Array.isArray(countryMap)) {
-                                  countryMap.forEach((item: any) => {
-                                    const country = item.clientCountryName || "未知";
-                                    const requests = item.requests || 0;
-                                    countryStats[country] = (countryStats[country] || 0) + requests;
-                                  });
-                                }
-                              });
-
-                              // 计算总请求数
-                              const totalRequests =
-                                Object.values(countryStats).reduce((sum, val) => sum + val, 0) ||
-                                httpGroups.reduce((sum: number, day: any) => sum + (day.sum?.requests || 0), 0);
-
-                              // 转换为数组并排序，取前7个，添加百分比
-                              let countryData = Object.entries(countryStats)
-                                .map(([country, requests]) => ({
-                                  country,
-                                  requests,
-                                  percentage: totalRequests > 0 ? ((requests / totalRequests) * 100).toFixed(1) : "0",
-                                  flag: getCountryFlag(country),
-                                }))
-                                .sort((a, b) => b.requests - a.requests)
-                                .slice(0, 7);
-
-                              const hasRealData = countryData.length > 0;
-
-                              // 如果没有真实数据，使用模拟数据
-                              if (!hasRealData) {
-                                countryData = [
-                                  {
-                                    country: "中国",
-                                    requests: Math.round(totalRequests * 0.35),
-                                    percentage: "35.0",
-                                    flag: "🇨🇳",
-                                  },
-                                  {
-                                    country: "美国",
-                                    requests: Math.round(totalRequests * 0.25),
-                                    percentage: "25.0",
-                                    flag: "🇺🇸",
-                                  },
-                                  {
-                                    country: "日本",
-                                    requests: Math.round(totalRequests * 0.15),
-                                    percentage: "15.0",
-                                    flag: "🇯🇵",
-                                  },
-                                  {
-                                    country: "德国",
-                                    requests: Math.round(totalRequests * 0.08),
-                                    percentage: "8.0",
-                                    flag: "🇩🇪",
-                                  },
-                                  {
-                                    country: "英国",
-                                    requests: Math.round(totalRequests * 0.07),
-                                    percentage: "7.0",
-                                    flag: "🇬🇧",
-                                  },
-                                  {
-                                    country: "法国",
-                                    requests: Math.round(totalRequests * 0.05),
-                                    percentage: "5.0",
-                                    flag: "🇫🇷",
-                                  },
-                                  {
-                                    country: "其他",
-                                    requests: Math.round(totalRequests * 0.05),
-                                    percentage: "5.0",
-                                    flag: "🌍",
-                                  },
-                                ];
-                              }
-
-                              // 获取国旗的辅助函数
-                              function getCountryFlag(country: string): string {
-                                const flagMap: Record<string, string> = {
-                                  China: "🇨🇳",
-                                  中国: "🇨🇳",
-                                  "United States": "🇺🇸",
-                                  美国: "🇺🇸",
-                                  Japan: "🇯🇵",
-                                  日本: "🇯🇵",
-                                  Germany: "🇩🇪",
-                                  德国: "🇩🇪",
-                                  "United Kingdom": "🇬🇧",
-                                  英国: "🇬🇧",
-                                  France: "🇫🇷",
-                                  法国: "🇫🇷",
-                                  Canada: "🇨🇦",
-                                  加拿大: "🇨🇦",
-                                  Australia: "🇦🇺",
-                                  澳大利亚: "🇦🇺",
-                                  India: "🇮🇳",
-                                  印度: "🇮🇳",
-                                  Brazil: "🇧🇷",
-                                  巴西: "🇧🇷",
-                                  Russia: "🇷🇺",
-                                  俄罗斯: "🇷🇺",
-                                  "South Korea": "🇰🇷",
-                                  韩国: "🇰🇷",
-                                };
-                                return flagMap[country] || "🌍";
-                              }
-
-                              return (
-                                <>
-                                  <div className="h-80 mb-4 w-full">
-                                    <BarChart
-                                      width={700}
-                                      height={320}
-                                      data={countryData}
-                                      margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-                                    >
-                                      <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-                                      <XAxis
-                                        dataKey="country"
-                                        tick={{ fontSize: 12 }}
-                                        tickFormatter={(value, index) => `${countryData[index]?.flag} ${value}`}
-                                      />
-                                      <YAxis tick={{ fontSize: 12 }} />
-                                      <Tooltip
-                                        contentStyle={{
-                                          backgroundColor: "hsl(var(--background))",
-                                          border: "1px solid hsl(var(--border))",
-                                          borderRadius: "6px",
-                                        }}
-                                        formatter={(value: number, name: string, props: any) => [
-                                          `${value.toLocaleString()} (${props.payload.percentage}%)`,
-                                          "请求数",
-                                        ]}
-                                      />
-                                      <Bar dataKey="requests" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-                                    </BarChart>
-                                  </div>
-
-                                  {/* 国家列表 */}
-                                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-4">
-                                    {countryData.map((item) => (
-                                      <div
-                                        key={item.country}
-                                        className="flex justify-between items-center p-2 border border-border/30 rounded"
-                                      >
-                                        <span className="text-sm flex items-center gap-1">
-                                          <span>{item.flag}</span>
-                                          <span>{item.country}</span>
-                                        </span>
-                                        <span className="text-sm font-medium">{item.percentage}%</span>
-                                      </div>
-                                    ))}
-                                  </div>
-
-                                  {!hasRealData && (
-                                    <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                                      <p className="text-sm text-muted-foreground flex items-center gap-2">
-                                        <Info className="w-4 h-4 text-blue-600" />
-                                        注意：当前显示基于总请求数的估算。国家分布数据可能因 API 限制无法获取。
-                                      </p>
-                                    </div>
-                                  )}
-                                </>
-                              );
-                            })()}
-                          </div>
-                        ) : (
-                          <div className="h-64 flex items-center justify-center bg-muted/30 rounded">
-                            <div className="text-center text-muted-foreground">
-                              <Globe className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                              <p className="text-sm">点击"刷新数据"按钮获取分析数据</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 内容类型分析 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4 flex items-center gap-2">
-                          <FileText className="w-4 h-4" />
-                          内容类型分析
-                        </h3>
-                        {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                          <div>
-                            {(() => {
-                              // 从免费计划的 contentTypeMap 获取真实内容类型数据
-                              const httpGroups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                              const contentTypeStats: Record<string, number> = {};
-
-                              // 汇总所有天的内容类型数据
-                              httpGroups.forEach((day: any) => {
-                                const contentTypeMap = day.sum?.contentTypeMap;
-                                if (contentTypeMap && Array.isArray(contentTypeMap)) {
-                                  contentTypeMap.forEach((item: any) => {
-                                    const typeName = item.edgeResponseContentTypeName || "other";
-                                    const requests = item.requests || 0;
-
-                                    // 简化内容类型名称
-                                    let displayName = "其他";
-                                    const lowerType = typeName.toLowerCase();
-
-                                    if (lowerType.includes("html") || lowerType.includes("text")) {
-                                      displayName = "HTML/文本";
-                                    } else if (lowerType.includes("javascript") || lowerType.includes("js")) {
-                                      displayName = "JavaScript";
-                                    } else if (lowerType.includes("css")) {
-                                      displayName = "CSS";
-                                    } else if (
-                                      lowerType.includes("image") ||
-                                      lowerType.includes("png") ||
-                                      lowerType.includes("jpg") ||
-                                      lowerType.includes("jpeg") ||
-                                      lowerType.includes("gif") ||
-                                      lowerType.includes("webp")
-                                    ) {
-                                      displayName = "图片";
-                                    } else if (lowerType.includes("json")) {
-                                      displayName = "JSON";
-                                    } else if (lowerType.includes("xml")) {
-                                      displayName = "XML";
-                                    }
-
-                                    contentTypeStats[displayName] = (contentTypeStats[displayName] || 0) + requests;
-                                  });
-                                }
-                              });
-
-                              // 计算百分比
-                              const total = Object.values(contentTypeStats).reduce((sum, val) => sum + val, 0);
-                              const stats: Record<string, number> = {};
-                              Object.keys(contentTypeStats).forEach((key) => {
-                                stats[key] = Math.round((contentTypeStats[key] / total) * 100);
-                              });
-
-                              const hasRealData = Object.keys(stats).length > 0;
-
-                              // 如果没有真实数据，使用模拟数据
-                              if (!hasRealData) {
-                                stats["HTML/文本"] = 35;
-                                stats["JavaScript"] = 25;
-                                stats["图片"] = 30;
-                                stats["CSS"] = 10;
-                              }
-
-                              return (
-                                <>
-                                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                                    {Object.entries(stats)
-                                      .slice(0, 4)
-                                      .map(([type, percentage]) => (
-                                        <div key={type} className="p-3 border border-border/30 rounded-lg">
-                                          <div className="text-xs text-muted-foreground mb-1">{type}</div>
-                                          <div className="text-lg font-bold">{percentage}%</div>
-                                        </div>
-                                      ))}
-                                  </div>
-                                  {!hasRealData && (
-                                    <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                                      <p className="text-sm text-muted-foreground flex items-center gap-2">
-                                        <Info className="w-4 h-4 text-blue-600" />
-                                        注意：当前显示基于总请求数的估算。内容类型数据可能因 API 限制无法获取。
-                                      </p>
-                                    </div>
-                                  )}
-                                </>
-                              );
-                            })()}
-                          </div>
-                        ) : (
-                          <div className="h-48 flex items-center justify-center bg-muted/30 rounded">
-                            <div className="text-center text-muted-foreground">
-                              <FileText className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                              <p className="text-sm">点击"刷新数据"按钮获取分析数据</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 设备和浏览器统计 */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <h3 className="font-medium mb-4 flex items-center gap-2">
-                            <HardDrive className="w-4 h-4" />
-                            设备类型分布
-                          </h3>
-                          {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                            <div>
-                              {(() => {
-                                // 尝试使用真实的设备数据（Pro 计划）
-                                const deviceTypeGroups = analyticsData?.viewer?.zones?.[0]?.deviceTypeGroups;
-                                const hasRealData = deviceTypeGroups && deviceTypeGroups.length > 0;
-
-                                let deviceStats: Record<string, number> = {};
-
-                                if (hasRealData) {
-                                  // 使用真实数据
-                                  const total = deviceTypeGroups.reduce(
-                                    (sum: number, group: any) => sum + (group.sum?.requests || 0),
-                                    0,
-                                  );
-                                  deviceTypeGroups.forEach((group: any) => {
-                                    const deviceType = group.dimensions?.metric || "未知";
-                                    const count = group.sum?.requests || 0;
-                                    const typeMap: Record<string, string> = {
-                                      desktop: "桌面设备",
-                                      mobile: "移动设备",
-                                      tablet: "平板设备",
-                                    };
-                                    const displayName = typeMap[deviceType.toLowerCase()] || deviceType;
-                                    deviceStats[displayName] = Math.round((count / total) * 100);
-                                  });
-                                } else {
-                                  // 使用模拟数据
-                                  deviceStats = {
-                                    桌面设备: 45,
-                                    移动设备: 48,
-                                    平板设备: 7,
-                                  };
-                                }
-
-                                return (
-                                  <>
-                                    <div className="space-y-2 mb-4">
-                                      {Object.entries(deviceStats).map(([device, percentage]) => (
-                                        <div key={device} className="flex justify-between items-center">
-                                          <span className="text-sm text-muted-foreground">{device}</span>
-                                          <span className="font-medium">{percentage}%</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                    {!hasRealData && (
-                                      <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                                        <p className="text-xs text-muted-foreground flex items-center gap-2">
-                                          <Info className="w-3 h-3 text-yellow-600" />
-                                          需要 Pro 计划获取真实数据
-                                        </p>
-                                      </div>
-                                    )}
-                                  </>
-                                );
-                              })()}
-                            </div>
-                          ) : (
-                            <div className="h-40 flex items-center justify-center bg-muted/30 rounded">
-                              <div className="text-center text-muted-foreground">
-                                <HardDrive className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                                <p className="text-xs">暂无数据</p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="p-4 border border-border/50 rounded-lg">
-                          <h3 className="font-medium mb-4 flex items-center gap-2">
-                            <Globe className="w-4 h-4" />
-                            浏览器分布
-                          </h3>
-                          {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                            <div>
-                              {(() => {
-                                // 从免费计划的 browserMap 获取真实浏览器数据
-                                const httpGroups = analyticsData.viewer.zones[0].httpRequests1dGroups;
-                                const browserStats: Record<string, number> = {};
-
-                                // 汇总所有天的浏览器数据
-                                httpGroups.forEach((day: any) => {
-                                  const browserMap = day.sum?.browserMap;
-                                  if (browserMap && Array.isArray(browserMap)) {
-                                    browserMap.forEach((item: any) => {
-                                      const browser = item.uaBrowserFamily || "未知";
-                                      const requests = item.requests || 0;
-                                      browserStats[browser] = (browserStats[browser] || 0) + requests;
-                                    });
-                                  }
-                                });
-
-                                // 计算百分比并取前4个
-                                const total = Object.values(browserStats).reduce((sum, val) => sum + val, 0);
-                                const browserData = Object.entries(browserStats)
-                                  .map(([browser, requests]) => ({
-                                    browser,
-                                    percentage: Math.round((requests / total) * 100),
-                                  }))
-                                  .sort((a, b) => b.percentage - a.percentage)
-                                  .slice(0, 4);
-
-                                const hasRealData = browserData.length > 0;
-
-                                // 如果没有真实数据，使用模拟数据
-                                const displayData = hasRealData
-                                  ? browserData
-                                  : [
-                                      { browser: "Chrome", percentage: 58 },
-                                      { browser: "Safari", percentage: 22 },
-                                      { browser: "Firefox", percentage: 12 },
-                                      { browser: "其他", percentage: 8 },
-                                    ];
-
-                                return (
-                                  <>
-                                    <div className="space-y-2 mb-4">
-                                      {displayData.map(({ browser, percentage }) => (
-                                        <div key={browser} className="flex justify-between items-center">
-                                          <span className="text-sm text-muted-foreground">{browser}</span>
-                                          <span className="font-medium">{percentage}%</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                    {!hasRealData && (
-                                      <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                                        <p className="text-xs text-muted-foreground flex items-center gap-2">
-                                          <Info className="w-3 h-3 text-blue-600" />
-                                          当前显示基于总请求数的估算
-                                        </p>
-                                      </div>
-                                    )}
-                                  </>
-                                );
-                              })()}
-                            </div>
-                          ) : (
-                            <div className="h-40 flex items-center justify-center bg-muted/30 rounded">
-                              <div className="text-center text-muted-foreground">
-                                <Globe className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                                <p className="text-xs">暂无数据</p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* DNS 分析 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4 flex items-center gap-2">
-                          <Network className="w-4 h-4" />
-                          DNS 查询分析
-                        </h3>
-                        {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                          <div>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                              <div className="p-3 border border-border/30 rounded-lg">
-                                <div className="text-xs text-muted-foreground mb-1">总查询数</div>
-                                <div className="text-lg font-bold">1.2M</div>
-                              </div>
-                              <div className="p-3 border border-border/30 rounded-lg">
-                                <div className="text-xs text-muted-foreground mb-1">平均响应时间</div>
-                                <div className="text-lg font-bold text-green-600">15ms</div>
-                              </div>
-                              <div className="p-3 border border-border/30 rounded-lg">
-                                <div className="text-xs text-muted-foreground mb-1">NXDOMAIN</div>
-                                <div className="text-lg font-bold">2.5%</div>
-                              </div>
-                              <div className="p-3 border border-border/30 rounded-lg">
-                                <div className="text-xs text-muted-foreground mb-1">查询类型 A</div>
-                                <div className="text-lg font-bold">85%</div>
-                              </div>
-                            </div>
-                            <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                              <p className="text-sm text-muted-foreground flex items-center gap-2">
-                                <Info className="w-4 h-4 text-yellow-600" />
-                                注意：以上为模拟数据。真实的 DNS 分析需要升级到 <strong>
-                                  Cloudflare Pro 计划
-                                </strong>{" "}
-                                才能获取。
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="h-48 flex items-center justify-center bg-muted/30 rounded">
-                            <div className="text-center text-muted-foreground">
-                              <Network className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                              <p className="text-sm">点击"刷新数据"按钮获取分析数据</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 防火墙事件 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4 flex items-center gap-2">
-                          <Shield className="w-4 h-4" />
-                          防火墙事件日志
-                        </h3>
-                        {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                          <div>
-                            <div className="space-y-2 mb-4">
-                              <div className="flex justify-between items-center p-2 border border-border/30 rounded">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs px-2 py-1 bg-red-500/20 text-red-600 rounded">BLOCK</span>
-                                  <span className="text-sm">SQL 注入攻击</span>
-                                </div>
-                                <span className="text-xs text-muted-foreground">152 次</span>
-                              </div>
-                              <div className="flex justify-between items-center p-2 border border-border/30 rounded">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs px-2 py-1 bg-orange-500/20 text-orange-600 rounded">
-                                    CHALLENGE
-                                  </span>
-                                  <span className="text-sm">可疑流量</span>
-                                </div>
-                                <span className="text-xs text-muted-foreground">89 次</span>
-                              </div>
-                              <div className="flex justify-between items-center p-2 border border-border/30 rounded">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs px-2 py-1 bg-red-500/20 text-red-600 rounded">BLOCK</span>
-                                  <span className="text-sm">XSS 攻击</span>
-                                </div>
-                                <span className="text-xs text-muted-foreground">43 次</span>
-                              </div>
-                            </div>
-                            <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                              <p className="text-sm text-muted-foreground flex items-center gap-2">
-                                <Info className="w-4 h-4 text-yellow-600" />
-                                注意：以上为模拟数据。真实的防火墙事件日志需要升级到{" "}
-                                <strong>Cloudflare Pro 计划</strong> 才能获取。
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="h-48 flex items-center justify-center bg-muted/30 rounded">
-                            <div className="text-center text-muted-foreground">
-                              <Shield className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                              <p className="text-sm">点击"刷新数据"按钮获取分析数据</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 性能指标 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4 flex items-center gap-2">
-                          <Gauge className="w-4 h-4" />
-                          性能指标 (需要 Business 计划)
-                        </h3>
-                        {analyticsData?.viewer?.zones?.[0]?.httpRequests1dGroups ? (
-                          <div>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                              <div className="p-3 border border-border/30 rounded-lg">
-                                <div className="text-xs text-muted-foreground mb-1">平均 TTFB</div>
-                                <div className="text-lg font-bold text-green-600">120ms</div>
-                              </div>
-                              <div className="p-3 border border-border/30 rounded-lg">
-                                <div className="text-xs text-muted-foreground mb-1">页面加载时间</div>
-                                <div className="text-lg font-bold">1.8s</div>
-                              </div>
-                              <div className="p-3 border border-border/30 rounded-lg">
-                                <div className="text-xs text-muted-foreground mb-1">FCP</div>
-                                <div className="text-lg font-bold">0.9s</div>
-                              </div>
-                              <div className="p-3 border border-border/30 rounded-lg">
-                                <div className="text-xs text-muted-foreground mb-1">LCP</div>
-                                <div className="text-lg font-bold">2.1s</div>
-                              </div>
-                            </div>
-                            <div className="p-3 bg-purple-500/10 border border-purple-500/20 rounded-lg">
-                              <p className="text-sm text-muted-foreground flex items-center gap-2">
-                                <Info className="w-4 h-4 text-purple-600" />
-                                注意：以上为模拟数据。真实的性能指标需要升级到 <strong>
-                                  Cloudflare Business 计划
-                                </strong>{" "}
-                                才能获取。
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="h-48 flex items-center justify-center bg-muted/30 rounded">
-                            <div className="text-center text-muted-foreground">
-                              <Gauge className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                              <p className="text-sm">点击"刷新数据"按钮获取分析数据</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+              <AnalyticsView
+                analyticsData={analyticsData}
+                analyticsPeriod={analyticsPeriod}
+                isLoading={isLoading}
+                selectedZoneName={selectedZoneName}
+                onBack={() => {
+                  setActiveView("zones");
+                  setSelectedZone("");
+                  setSelectedZoneName("");
+                }}
+                onRefresh={() => loadAnalytics(selectedZone)}
+                onPeriodChange={(period) => {
+                  setAnalyticsPeriod(period);
+                  loadAnalytics(selectedZone, period);
+                }}
+              />
             )}
 
             {activeView === "page-rules" && selectedZone && (
@@ -7640,748 +6735,29 @@ const Index = () => {
             )}
 
             {activeView === "kv-storage" && (
-              <div className="max-w-6xl mx-auto">
-                <Card className="shadow-card mb-6">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Key className="w-5 h-5" />
-                      Workers KV 管理
-                    </CardTitle>
-                    <CardDescription>管理 Workers KV 命名空间和键值对</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-6">
-                      {/* 创建命名空间 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4">创建 KV 命名空间</h3>
-                        <div className="flex gap-2">
-                          <Input placeholder="输入命名空间名称" id="kv-namespace-name" className="flex-1" />
-                          <Button
-                            onClick={async () => {
-                              const input = document.getElementById("kv-namespace-name") as HTMLInputElement;
-                              const namespaceName = input?.value;
-                              if (!namespaceName) {
-                                toast({
-                                  title: "请输入命名空间名称",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-
-                              const email = getCookie("cf_email") || cfEmail;
-                              const apiKey = getCookie("cf_api_key") || cfApiKey;
-                              if (!email || !apiKey) {
-                                toast({
-                                  title: "未找到 Cloudflare 凭证",
-                                  description: "请先登录 Cloudflare 账号",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-
-                              setIsLoading(true);
-                              try {
-                                const accountId = zones[0]?.account?.id;
-                                if (!accountId) {
-                                  toast({
-                                    title: "无法获取账户 ID",
-                                    description: "请先选择一个域名",
-                                    variant: "destructive",
-                                  });
-                                  setIsLoading(false);
-                                  return;
-                                }
-
-                                const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                  body: {
-                                    action: "create_kv_namespace",
-                                    email,
-                                    apiKey,
-                                    accountId,
-                                    data: {
-                                      title: namespaceName,
-                                    },
-                                  },
-                                });
-
-                                if (error) throw error;
-
-                                if (data.success) {
-                                  toast({
-                                    title: "命名空间创建成功",
-                                  });
-                                  input.value = "";
-                                  // 重新加载命名空间列表
-                                  loadKvNamespaces();
-                                } else {
-                                  toast({
-                                    title: "创建失败",
-                                    description: data.errors?.[0]?.message || "未知错误",
-                                    variant: "destructive",
-                                  });
-                                }
-                              } catch (error) {
-                                console.error("Create namespace error:", error);
-                                toast({
-                                  title: "创建失败",
-                                  variant: "destructive",
-                                });
-                              } finally {
-                                setIsLoading(false);
-                              }
-                            }}
-                            disabled={isLoading}
-                          >
-                            {isLoading ? (
-                              <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                创建中...
-                              </>
-                            ) : (
-                              "创建命名空间"
-                            )}
-                          </Button>
-                        </div>
-                      </div>
-
-                      {/* 命名空间列表 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <div className="flex justify-between items-center mb-4">
-                          <h3 className="font-medium">KV 命名空间列表</h3>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={async () => {
-                              const email = getCookie("cf_email") || cfEmail;
-                              const apiKey = getCookie("cf_api_key") || cfApiKey;
-                              if (!email || !apiKey) {
-                                toast({
-                                  title: "未找到 Cloudflare 凭证",
-                                  description: "请先登录 Cloudflare 账号",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-
-                              const accountId = zones[0]?.account?.id;
-                              if (!accountId) {
-                                toast({
-                                  title: "无法获取账户 ID",
-                                  description: "请先选择一个域名",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-
-                              setIsLoading(true);
-                              try {
-                                const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                  body: {
-                                    action: "list_kv_namespaces",
-                                    email,
-                                    apiKey,
-                                    accountId,
-                                  },
-                                });
-
-                                if (error) throw error;
-
-                                if (data.success) {
-                                  setKvNamespaces(data.result || []);
-                                  toast({
-                                    title: `列表已刷新 (${data.result?.length || 0} 个命名空间)`,
-                                  });
-                                } else {
-                                  toast({
-                                    title: "加载失败",
-                                    description: data.errors?.[0]?.message || "未知错误",
-                                    variant: "destructive",
-                                  });
-                                }
-                              } catch (error) {
-                                console.error("Load namespaces error:", error);
-                                toast({
-                                  title: "加载失败",
-                                  variant: "destructive",
-                                });
-                              } finally {
-                                setIsLoading(false);
-                              }
-                            }}
-                            disabled={isLoading}
-                          >
-                            {isLoading ? (
-                              <>
-                                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                                加载中...
-                              </>
-                            ) : (
-                              "刷新列表"
-                            )}
-                          </Button>
-                        </div>
-                        {kvNamespaces.length === 0 ? (
-                          <div className="text-sm text-muted-foreground text-center py-8">
-                            暂无命名空间数据，点击上方创建或刷新列表
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {kvNamespaces.map((ns: any) => (
-                              <div key={ns.id} className="p-3 border border-border/50 rounded-md bg-card/50">
-                                <div className="flex justify-between items-start">
-                                  <div>
-                                    <h4 className="font-medium">{ns.title}</h4>
-                                    <p className="text-xs text-muted-foreground mt-1">ID: {ns.id}</p>
-                                  </div>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={async () => {
-                                      if (
-                                        !confirm(
-                                          `确定要删除命名空间 "${ns.title}" 吗？此操作将删除该命名空间下的所有键值对，且无法恢复。`,
-                                        )
-                                      ) {
-                                        return;
-                                      }
-                                      const email = getCookie("cf_email") || cfEmail;
-                                      const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                      const accountId = zones[0]?.account?.id;
-                                      if (!email || !apiKey || !accountId) {
-                                        toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                        return;
-                                      }
-                                      setIsLoading(true);
-                                      try {
-                                        const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                          body: {
-                                            action: "delete_kv_namespace",
-                                            email,
-                                            apiKey,
-                                            accountId,
-                                            namespaceId: ns.id,
-                                          },
-                                        });
-
-                                        if (error) throw error;
-
-                                        if (data.success) {
-                                          toast({ title: "命名空间删除成功" });
-                                          setKvNamespaces(kvNamespaces.filter((n: any) => n.id !== ns.id));
-                                          if (selectedKvNamespace === ns.id) {
-                                            setSelectedKvNamespace("");
-                                            setKvKeys([]);
-                                          }
-                                        } else {
-                                          toast({
-                                            title: "删除失败",
-                                            description: data.errors?.[0]?.message || "未知错误",
-                                            variant: "destructive",
-                                          });
-                                        }
-                                      } catch (e: any) {
-                                        toast({
-                                          title: "删除失败",
-                                          description: e.message,
-                                          variant: "destructive",
-                                        });
-                                      } finally {
-                                        setIsLoading(false);
-                                      }
-                                    }}
-                                  >
-                                    <Trash2 className="h-4 w-4 text-destructive" />
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 键值对管理 */}
-                      <div className="p-4 border border-border/50 rounded-lg">
-                        <h3 className="font-medium mb-4">键值对管理</h3>
-                        <div className="space-y-4">
-                          <div>
-                            <Label className="text-sm mb-2 block">选择命名空间</Label>
-                            <select
-                              className="w-full p-2 border border-border/50 rounded-md bg-background"
-                              value={selectedKvNamespace}
-                              onChange={(e) => setSelectedKvNamespace(e.target.value)}
-                            >
-                              <option value="">
-                                {kvNamespaces.length === 0 ? "请先加载命名空间列表" : "请选择命名空间"}
-                              </option>
-                              {kvNamespaces.map((ns: any) => (
-                                <option key={ns.id} value={ns.id}>
-                                  {ns.title} (ID: {ns.id})
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-
-                          <Separator />
-
-                          <div className="space-y-3">
-                            <h4 className="text-sm font-medium">添加/更新键值对</h4>
-                            <div>
-                              <Label className="text-sm mb-2 block">键 (Key)</Label>
-                              <Input placeholder="例如：user:123" id="kv-key" className="mb-2" />
-                            </div>
-                            <div>
-                              <Label className="text-sm mb-2 block">值 (Value)</Label>
-                              <textarea
-                                placeholder='例如：{"name": "John", "age": 30}'
-                                id="kv-value"
-                                className="w-full min-h-[100px] p-2 border border-border/50 rounded-md bg-background"
-                              />
-                              <p className="text-xs text-muted-foreground mt-1">支持文本、JSON 等格式</p>
-                            </div>
-                            <div className="flex gap-2">
-                              <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={async () => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
-                                  const valInput = document.getElementById("kv-value") as HTMLTextAreaElement | null;
-                                  const key = keyInput?.value?.trim() || "";
-                                  const value = valInput?.value || "";
-                                  if (!key) {
-                                    toast({ title: "请输入键名", variant: "destructive" });
-                                    return;
-                                  }
-                                  const email = getCookie("cf_email") || cfEmail;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                  const accountId = zones[0]?.account?.id;
-                                  if (!email || !apiKey || !accountId) {
-                                    toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                    return;
-                                  }
-                                  setIsLoading(true);
-                                  try {
-                                    const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                    const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
-                                      method: "PUT",
-                                      headers: {
-                                        "X-Auth-Email": email,
-                                        "X-Auth-Key": apiKey,
-                                        "Content-Type": "text/plain",
-                                      },
-                                      body: value,
-                                    });
-                                    const json = await resp.json().catch(() => ({}));
-                                    if (resp.ok && json.success !== false) {
-                                      toast({ title: "保存成功" });
-                                      if (!kvKeys.find((k: any) => k.name === key)) {
-                                        setKvKeys([...kvKeys, { name: key }]);
-                                      }
-                                    } else {
-                                      toast({
-                                        title: "保存失败",
-                                        description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
-                                        variant: "destructive",
-                                      });
-                                    }
-                                  } catch (e: any) {
-                                    toast({ title: "保存失败", description: e.message, variant: "destructive" });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                              >
-                                保存键值对
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={async () => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
-                                  const valInput = document.getElementById("kv-value") as HTMLTextAreaElement | null;
-                                  const key = keyInput?.value?.trim() || "";
-                                  if (!key) {
-                                    toast({ title: "请输入键名", variant: "destructive" });
-                                    return;
-                                  }
-                                  const email = getCookie("cf_email") || cfEmail;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                  const accountId = zones[0]?.account?.id;
-                                  if (!email || !apiKey || !accountId) {
-                                    toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                    return;
-                                  }
-                                  setIsLoading(true);
-                                  try {
-                                    const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                    const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
-                                      method: "GET",
-                                      headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                    });
-                                    if (resp.ok) {
-                                      const text = await resp.text();
-                                      if (valInput) valInput.value = text;
-                                      toast({ title: "读取成功" });
-                                    } else {
-                                      const err = await resp.json().catch(() => ({}));
-                                      toast({
-                                        title: "读取失败",
-                                        description: err.errors?.[0]?.message || `HTTP ${resp.status}`,
-                                        variant: "destructive",
-                                      });
-                                    }
-                                  } catch (e: any) {
-                                    toast({ title: "读取失败", description: e.message, variant: "destructive" });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                              >
-                                读取值
-                              </Button>
-                              <Button
-                                variant="destructive"
-                                className="flex-1"
-                                onClick={async () => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  const keyInput = document.getElementById("kv-key") as HTMLInputElement | null;
-                                  const key = keyInput?.value?.trim() || "";
-                                  if (!key) {
-                                    toast({ title: "请输入键名", variant: "destructive" });
-                                    return;
-                                  }
-                                  const email = getCookie("cf_email") || cfEmail;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                  const accountId = zones[0]?.account?.id;
-                                  if (!email || !apiKey || !accountId) {
-                                    toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                    return;
-                                  }
-                                  setIsLoading(true);
-                                  try {
-                                    const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                    const resp = await fetch(`${base}/values/${encodeURIComponent(key)}`, {
-                                      method: "DELETE",
-                                      headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                    });
-                                    const json = await resp.json().catch(() => ({}));
-                                    if (resp.ok && json.success !== false) {
-                                      toast({ title: "删除成功" });
-                                      setKvKeys(kvKeys.filter((k: any) => k.name !== key));
-                                      setSelectedKvKeys(selectedKvKeys.filter((n) => n !== key));
-                                    } else {
-                                      toast({
-                                        title: "删除失败",
-                                        description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
-                                        variant: "destructive",
-                                      });
-                                    }
-                                  } catch (e: any) {
-                                    toast({ title: "删除失败", description: e.message, variant: "destructive" });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                              >
-                                删除键
-                              </Button>
-                            </div>
-                          </div>
-
-                          <Separator />
-
-                          <div className="space-y-3">
-                            <h4 className="text-sm font-medium">批量操作</h4>
-                            <div className="flex gap-2">
-                              <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={async () => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  if (selectedKvKeys.length === 0 && kvKeys.length === 0) {
-                                    toast({ title: "无可导出的键" });
-                                    return;
-                                  }
-                                  const keysToExport = selectedKvKeys.length
-                                    ? selectedKvKeys
-                                    : kvKeys.map((k: any) => k.name);
-                                  const email = getCookie("cf_email") || cfEmail;
-                                  const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                  const accountId = zones[0]?.account?.id;
-                                  if (!email || !apiKey || !accountId) {
-                                    toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                    return;
-                                  }
-                                  setIsLoading(true);
-                                  try {
-                                    const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                    const entries: any[] = [];
-                                    for (const k of keysToExport) {
-                                      const resp = await fetch(`${base}/values/${encodeURIComponent(k)}`, {
-                                        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                      });
-                                      const val = resp.ok ? await resp.text() : "";
-                                      entries.push({ key: k, value: val });
-                                    }
-                                    const blob = new Blob([JSON.stringify(entries, null, 2)], {
-                                      type: "application/json",
-                                    });
-                                    const url = URL.createObjectURL(blob);
-                                    const a = document.createElement("a");
-                                    a.href = url;
-                                    a.download = `kv-export-${selectedKvNamespace}.json`;
-                                    document.body.appendChild(a);
-                                    a.click();
-                                    a.remove();
-                                    URL.revokeObjectURL(url);
-                                    toast({ title: "导出完成", description: `共导出 ${entries.length} 个键` });
-                                  } catch (e: any) {
-                                    toast({ title: "导出失败", description: e.message, variant: "destructive" });
-                                  } finally {
-                                    setIsLoading(false);
-                                  }
-                                }}
-                              >
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="16"
-                                  height="16"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  className="mr-2"
-                                >
-                                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                  <polyline points="7 10 12 15 17 10" />
-                                  <line x1="12" x2="12" y1="15" y2="3" />
-                                </svg>
-                                导出为 JSON
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={() => {
-                                  if (!selectedKvNamespace) {
-                                    toast({ title: "请选择命名空间", variant: "destructive" });
-                                    return;
-                                  }
-                                  const input = document.createElement("input");
-                                  input.type = "file";
-                                  input.accept = "application/json";
-                                  input.onchange = async () => {
-                                    const file = input.files?.[0];
-                                    if (!file) return;
-                                    const text = await file.text();
-                                    let arr: any[] = [];
-                                    try {
-                                      arr = JSON.parse(text);
-                                    } catch {
-                                      toast({ title: "JSON 解析失败", variant: "destructive" });
-                                      return;
-                                    }
-                                    if (!Array.isArray(arr)) {
-                                      toast({ title: "格式错误，应为数组", variant: "destructive" });
-                                      return;
-                                    }
-                                    const email = getCookie("cf_email") || cfEmail;
-                                    const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                    const accountId = zones[0]?.account?.id;
-                                    if (!email || !apiKey || !accountId) {
-                                      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                      return;
-                                    }
-                                    setIsLoading(true);
-                                    try {
-                                      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                      let ok = 0;
-                                      for (const item of arr) {
-                                        if (!item?.key) continue;
-                                        const resp = await fetch(`${base}/values/${encodeURIComponent(item.key)}`, {
-                                          method: "PUT",
-                                          headers: {
-                                            "X-Auth-Email": email,
-                                            "X-Auth-Key": apiKey,
-                                            "Content-Type": "text/plain",
-                                          },
-                                          body: String(item.value ?? ""),
-                                        });
-                                        if (resp.ok) ok++;
-                                      }
-                                      toast({ title: "导入完成", description: `成功 ${ok} 个` });
-                                      // 刷新列表
-                                      const resp = await fetch(`${base}/keys?limit=1000`, {
-                                        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                      });
-                                      const j = await resp.json();
-                                      if (j?.result) setKvKeys(j.result);
-                                    } catch (e: any) {
-                                      toast({ title: "导入失败", description: e.message, variant: "destructive" });
-                                    } finally {
-                                      setIsLoading(false);
-                                    }
-                                  };
-                                  input.click();
-                                }}
-                              >
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="16"
-                                  height="16"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  className="mr-2"
-                                >
-                                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                  <polyline points="17 8 12 3 7 8" />
-                                  <line x1="12" x2="12" y1="3" y2="15" />
-                                </svg>
-                                从 JSON 导入
-                              </Button>
-                            </div>
-                            <p className="text-xs text-muted-foreground">
-                              导入格式：{`[{"key": "key1", "value": "value1"}, ...]`}
-                            </p>
-                          </div>
-
-                          <Separator />
-
-                          <div>
-                            <div className="flex justify-between items-center mb-3">
-                              <h4 className="text-sm font-medium">键列表</h4>
-                              <div className="flex items-center gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={async () => {
-                                    if (!selectedKvNamespace) {
-                                      toast({ title: "请选择命名空间", variant: "destructive" });
-                                      return;
-                                    }
-                                    const email = getCookie("cf_email") || cfEmail;
-                                    const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                    const accountId = zones[0]?.account?.id;
-                                    if (!email || !apiKey || !accountId) {
-                                      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-                                      return;
-                                    }
-                                    setIsLoading(true);
-                                    try {
-                                      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                      const resp = await fetch(`${base}/keys?limit=1000`, {
-                                        headers: { "X-Auth-Email": email, "X-Auth-Key": apiKey },
-                                      });
-                                      const json = await resp.json();
-                                      if (resp.ok && json?.result) {
-                                        setKvKeys(json.result);
-                                        setSelectedKvKeys([]);
-                                        toast({ title: "已加载键列表", description: `共 ${json.result.length} 个` });
-                                      } else {
-                                        toast({
-                                          title: "加载失败",
-                                          description: json.errors?.[0]?.message || `HTTP ${resp.status}`,
-                                          variant: "destructive",
-                                        });
-                                      }
-                                    } catch (e: any) {
-                                      toast({ title: "加载失败", description: e.message, variant: "destructive" });
-                                    } finally {
-                                      setIsLoading(false);
-                                    }
-                                  }}
-                                >
-                                  加载键列表
-                                </Button>
-                                <Button
-                                  variant="destructive"
-                                  size="sm"
-                                  disabled={selectedKvKeys.length === 0}
-                                  onClick={async () => {
-                                    if (!selectedKvNamespace || selectedKvKeys.length === 0) return;
-                                    const email = getCookie("cf_email") || cfEmail;
-                                    const apiKey = getCookie("cf_api_key") || cfApiKey;
-                                    const accountId = zones[0]?.account?.id;
-                                    setIsLoading(true);
-                                    try {
-                                      const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${selectedKvNamespace}`;
-                                      let ok = 0;
-                                      for (const k of selectedKvKeys) {
-                                        const resp = await fetch(`${base}/values/${encodeURIComponent(k)}`, {
-                                          method: "DELETE",
-                                          headers: { "X-Auth-Email": email!, "X-Auth-Key": apiKey! },
-                                        });
-                                        if (resp.ok) ok++;
-                                      }
-                                      setKvKeys(kvKeys.filter((i: any) => !selectedKvKeys.includes(i.name)));
-                                      setSelectedKvKeys([]);
-                                      toast({ title: "批量删除完成", description: `成功 ${ok} 个` });
-                                    } catch (e: any) {
-                                      toast({ title: "批量删除失败", description: e.message, variant: "destructive" });
-                                    } finally {
-                                      setIsLoading(false);
-                                    }
-                                  }}
-                                >
-                                  批量删除
-                                </Button>
-                              </div>
-                            </div>
-                            {!selectedKvNamespace ? (
-                              <div className="text-sm text-muted-foreground text-center py-4">
-                                选择命名空间后加载键列表
-                              </div>
-                            ) : kvKeys.length === 0 ? (
-                              <div className="text-sm text-muted-foreground text-center py-4">
-                                暂无键，点击“加载键列表”获取
-                              </div>
-                            ) : (
-                              <div className="border border-border/50 rounded-md divide-y max-h-64 overflow-auto">
-                                {kvKeys.map((item: any) => (
-                                  <label
-                                    key={item.name}
-                                    className="flex items-center gap-3 p-2 cursor-pointer hover:bg-muted/40"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedKvKeys.includes(item.name)}
-                                      onChange={(e) => {
-                                        const checked = e.target.checked;
-                                        setSelectedKvKeys((prev) =>
-                                          checked ? [...prev, item.name] : prev.filter((n) => n !== item.name),
-                                        );
-                                      }}
-                                    />
-                                    <span className="text-sm font-mono truncate">{item.name}</span>
-                                  </label>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+              <KvStorageView
+                kvNamespaces={kvNamespaces}
+                selectedKvNamespace={selectedKvNamespace}
+                kvKeys={kvKeys}
+                selectedKvKeys={selectedKvKeys}
+                isLoading={isLoading}
+                onCreateNamespace={handleCreateKvNamespace}
+                onRefreshNamespaces={handleRefreshKvNamespaces}
+                onDeleteNamespace={handleDeleteKvNamespace}
+                onNamespaceChange={setSelectedKvNamespace}
+                onSaveKeyValue={handleSaveKvKeyValue}
+                onReadValue={handleReadKvValue}
+                onDeleteKey={handleDeleteKvKey}
+                onExportKeys={handleExportKvKeys}
+                onImportKeys={handleImportKvKeys}
+                onLoadKeys={handleLoadKvKeys}
+                onDeleteSelectedKeys={handleDeleteSelectedKvKeys}
+                onToggleKeySelection={(keyName, checked) =>
+                  setSelectedKvKeys((prev) =>
+                    checked ? [...prev, keyName] : prev.filter((n) => n !== keyName),
+                  )
+                }
+              />
             )}
 
             {activeView === "certificates" && (
@@ -9686,471 +8062,93 @@ const Index = () => {
 
             {/* Pages 管理 */}
             {activeView === "pages" && (
-              <div className="max-w-7xl mx-auto space-y-4">
-                <Card className="shadow-card">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="flex items-center gap-2">
-                          <FileText className="w-5 h-5" />
-                          Pages 项目
-                        </CardTitle>
-                        <CardDescription>使用 Cloudflare Pages 部署静态网站和全栈应用</CardDescription>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          onClick={loadPagesProjects}
-                          disabled={isLoadingPages || zones.length === 0}
-                        >
-                          <Loader2 className={`w-4 h-4 mr-2 ${isLoadingPages ? "animate-spin" : ""}`} />
-                          刷新
-                        </Button>
-                        <Button
-                          onClick={() => setCreatePagesProjectOpen(true)}
-                          disabled={isLoadingPages || zones.length === 0}
-                        >
-                          <Upload className="w-4 h-4 mr-2" />
-                          新建项目
-                        </Button>
-                        <Button
-                          onClick={() => window.open("https://dash.cloudflare.com/?to=/:account/pages", "_blank")}
-                          variant="outline"
-                        >
-                          <Globe className="w-4 h-4 mr-2" />
-                          Dashboard
-                        </Button>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    {isLoadingPages && pagesProjects.length === 0 ? (
-                      <div className="text-center py-12">
-                        <Loader2 className="w-8 h-8 mx-auto text-muted-foreground mb-4 animate-spin" />
-                        <p className="text-muted-foreground">正在加载 Pages 项目...</p>
-                      </div>
-                    ) : pagesProjects.length === 0 ? (
-                      <div className="text-center py-12 space-y-4">
-                        <FileText className="w-16 h-16 mx-auto text-muted-foreground" />
-                        <div>
-                          <h3 className="text-lg font-semibold mb-2">暂无 Pages 项目</h3>
-                          <p className="text-muted-foreground mb-4">您还没有创建任何 Pages 项目</p>
-                          <Button
-                            onClick={() => window.open("https://dash.cloudflare.com/?to=/:account/pages", "_blank")}
-                            variant="outline"
-                          >
-                            <Globe className="w-4 h-4 mr-2" />
-                            前往 Dashboard 创建项目
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {pagesProjects.map((project: any) => (
-                          <div
-                            key={project.id || project.name}
-                            className="p-4 border border-border/50 rounded-lg hover:bg-muted/30 transition-colors"
-                          >
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-3 mb-2">
-                                  <h3 className="font-medium truncate">{project.name}</h3>
-                                  {/* 状态徽章 */}
-                                  {project.production_deployment && (
-                                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-green-500/10 text-green-600 text-xs font-medium">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-green-600 mr-1.5"></span>
-                                      已部署
-                                    </span>
-                                  )}
-                                  {!project.production_deployment && (
-                                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-gray-500/10 text-gray-600 text-xs font-medium">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-gray-600 mr-1.5"></span>
-                                      未部署
-                                    </span>
-                                  )}
-                                </div>
+              <PagesView
+                pagesProjects={pagesProjects}
+                pagesDeployments={pagesDeployments}
+                selectedPagesProject={selectedPagesProject}
+                showPagesDeployments={showPagesDeployments}
+                isLoadingPages={isLoadingPages}
+                zonesReady={zones.length > 0}
+                onRefresh={loadPagesProjects}
+                onCreateProject={() => setCreatePagesProjectOpen(true)}
+                onOpenDashboard={() => window.open("https://dash.cloudflare.com/?to=/:account/pages", "_blank")}
+                onOpenProjectDashboard={(projectName) => {
+                  const accountId = zones[0]?.account?.id;
+                  if (accountId && projectName) {
+                    window.open(
+                      `https://dash.cloudflare.com/${accountId}/pages/view/${projectName}`,
+                      "_blank",
+                    );
+                  }
+                }}
+                onOpenDeployments={(projectName) => {
+                  setSelectedPagesProject(projectName);
+                  setShowPagesDeployments(true);
+                  loadPagesDeployments(projectName);
+                }}
+                onCloseDeployments={() => {
+                  setShowPagesDeployments(false);
+                  setSelectedPagesProject("");
+                  setPagesDeployments([]);
+                }}
+                onRetryDeployment={async (deploymentId) => {
+                  const email = getCookie("cf_email");
+                  const apiKey = getCookie("cf_api_key");
+                  if (!email || !apiKey || zones.length === 0) return;
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-muted-foreground mb-3">
-                                  {/* Pages.dev 域名 */}
-                                  {project.subdomain && (
-                                    <div className="flex items-center gap-1.5">
-                                      <Globe className="w-3.5 h-3.5" />
-                                      <a
-                                        href={`https://${project.subdomain}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="truncate hover:text-primary transition-colors"
-                                      >
-                                        {project.subdomain}
-                                      </a>
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-5 w-5 p-0"
-                                        onClick={() => {
-                                          navigator.clipboard.writeText(`https://${project.subdomain}`);
-                                          toast({ description: "URL 已复制" });
-                                        }}
-                                      >
-                                        <Copy className="w-3 h-3" />
-                                      </Button>
-                                    </div>
-                                  )}
-                                  <div className="flex items-center gap-1.5">
-                                    <Settings className="w-3.5 h-3.5" />
-                                    <span>创建: {new Date(project.created_on).toLocaleDateString("zh-CN")}</span>
-                                  </div>
-                                </div>
+                  const accountId = zones[0]?.account?.id;
+                  if (!accountId || !selectedPagesProject) return;
 
-                                {/* 自定义域名 */}
-                                {project.domains && project.domains.length > 0 && (
-                                  <div className="mb-3">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      {project.domains.slice(0, 3).map((domain: any, idx: number) => {
-                                        const domainName = typeof domain === "string" ? domain : domain.name;
+                  const deployment = pagesDeployments.find((d) => d.id === deploymentId);
+                  if (!deployment) return;
 
-                                        return (
-                                          <div
-                                            key={idx}
-                                            className="flex items-center gap-1 bg-muted/50 rounded px-2 py-1"
-                                          >
-                                            <Globe className="w-3 h-3 text-primary" />
-                                            <a
-                                              href={`https://${domainName}`}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              className="text-xs text-primary hover:underline"
-                                            >
-                                              {domainName}
-                                            </a>
-                                            <Button
-                                              size="sm"
-                                              variant="ghost"
-                                              className="h-4 w-4 p-0"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                navigator.clipboard.writeText(`https://${domainName}`);
-                                                toast({
-                                                  description: "自定义域名已复制",
-                                                });
-                                              }}
-                                            >
-                                              <Copy className="w-2.5 h-2.5" />
-                                            </Button>
-                                          </div>
-                                        );
-                                      })}
-                                      {project.domains.length > 3 && (
-                                        <span className="text-xs text-muted-foreground">
-                                          +{project.domains.length - 3} 更多
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
+                  if (
+                    !confirm(
+                      `确定要重新部署此版本吗？\n\n部署 ID: ${deploymentId.slice(0, 8)}\n环境: ${deployment.environment}`,
+                    )
+                  )
+                    return;
 
-                                {/* 生产环境部署信息 */}
-                                {project.production_deployment && (
-                                  <div className="p-2 bg-muted/50 rounded-md text-sm">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <Zap className="w-4 h-4 text-primary" />
-                                      <span className="font-medium">生产环境</span>
-                                    </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-xs text-muted-foreground pl-6">
-                                      {project.production_deployment.environment && (
-                                        <div>环境: {project.production_deployment.environment}</div>
-                                      )}
-                                      {project.production_deployment.url && (
-                                        <div className="truncate">
-                                          <a
-                                            href={project.production_deployment.url}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="hover:text-primary transition-colors"
-                                          >
-                                            {project.production_deployment.url}
-                                          </a>
-                                        </div>
-                                      )}
-                                      {project.production_deployment.latest_stage && (
-                                        <div>状态: {project.production_deployment.latest_stage.name || "unknown"}</div>
-                                      )}
-                                      {project.production_deployment.created_on && (
-                                        <div>
-                                          部署:{" "}
-                                          {new Date(project.production_deployment.created_on).toLocaleString("zh-CN")}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
+                  setIsLoadingPages(true);
+                  try {
+                    const { data, error } = await supabase.functions.invoke("cloudflare-api", {
+                      body: {
+                        action: "retry_pages_deployment",
+                        email,
+                        apiKey,
+                        accountId,
+                        projectName: selectedPagesProject,
+                        deploymentId,
+                      },
+                    });
 
-                                {/* 源码信息 */}
-                                {project.source && (
-                                  <div className="mt-2 text-xs text-muted-foreground flex items-center gap-4">
-                                    {project.source.type && (
-                                      <div className="flex items-center gap-1">
-                                        <Code2 className="w-3 h-3" />
-                                        源码: {project.source.type}
-                                      </div>
-                                    )}
-                                    {project.source.config && project.source.config.owner && (
-                                      <div className="truncate">
-                                        仓库: {project.source.config.owner}/{project.source.config.repo_name}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
+                    if (error) throw error;
 
-                              {/* 操作按钮 */}
-                              <div className="flex items-center gap-2 flex-shrink-0">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => {
-                                    setSelectedPagesProject(project.name);
-                                    setPagesProjectDetail(project);
-                                    setShowPagesDeployments(true);
-                                    loadPagesDeployments(project.name);
-                                  }}
-                                  disabled={isLoadingPages}
-                                >
-                                  <History className="w-4 h-4 mr-1.5" />
-                                  部署
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => {
-                                    const accountId = zones[0]?.account?.id;
-                                    if (accountId && project.name) {
-                                      window.open(
-                                        `https://dash.cloudflare.com/${accountId}/pages/view/${project.name}`,
-                                        "_blank",
-                                      );
-                                    }
-                                  }}
-                                  disabled={isLoadingPages}
-                                >
-                                  <Settings className="w-4 h-4 mr-1.5" />
-                                  管理
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {/* 部署历史 */}
-                {showPagesDeployments && selectedPagesProject && (
-                  <Card className="shadow-card">
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <CardTitle className="flex items-center gap-2">
-                            <History className="w-5 h-5" />
-                            部署历史 - {selectedPagesProject}
-                          </CardTitle>
-                          <CardDescription>查看项目的所有部署记录</CardDescription>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setShowPagesDeployments(false);
-                              setSelectedPagesProject("");
-                              setPagesDeployments([]);
-                            }}
-                          >
-                            <X className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      {isLoadingPages && pagesDeployments.length === 0 ? (
-                        <div className="text-center py-8">
-                          <Loader2 className="w-6 h-6 mx-auto text-muted-foreground mb-3 animate-spin" />
-                          <p className="text-sm text-muted-foreground">加载部署历史...</p>
-                        </div>
-                      ) : pagesDeployments.length === 0 ? (
-                        <div className="text-center py-8">
-                          <History className="w-12 h-12 mx-auto text-muted-foreground mb-3" />
-                          <p className="text-muted-foreground">暂无部署记录</p>
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          {pagesDeployments.map((deployment: any) => (
-                            <div
-                              key={deployment.id}
-                              className="p-3 border border-border/50 rounded-md hover:bg-muted/30 transition-colors"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className="font-mono text-sm truncate">{deployment.id.slice(0, 8)}</span>
-                                    {/* 环境标签 */}
-                                    {deployment.environment === "production" && (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary">
-                                        生产
-                                      </span>
-                                    )}
-                                    {deployment.environment === "preview" && (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-accent/10 text-accent">
-                                        预览
-                                      </span>
-                                    )}
-                                    {/* 状态标签 */}
-                                    {deployment.latest_stage?.name === "deploy" &&
-                                      deployment.latest_stage?.status === "success" && (
-                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-500/10 text-green-600">
-                                          成功
-                                        </span>
-                                      )}
-                                    {deployment.latest_stage?.name === "deploy" &&
-                                      deployment.latest_stage?.status === "failure" && (
-                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-red-500/10 text-red-600">
-                                          失败
-                                        </span>
-                                      )}
-                                    {deployment.latest_stage?.status === "active" && (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-500/10 text-yellow-600">
-                                        进行中
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-muted-foreground">
-                                    {deployment.url && (
-                                      <div className="flex items-center gap-1 truncate">
-                                        <Globe className="w-3 h-3 flex-shrink-0" />
-                                        <a
-                                          href={deployment.url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="truncate hover:text-primary transition-colors"
-                                        >
-                                          {deployment.url.replace("https://", "")}
-                                        </a>
-                                      </div>
-                                    )}
-                                    {deployment.created_on && (
-                                      <div className="flex items-center gap-1">
-                                        <Settings className="w-3 h-3" />
-                                        {new Date(deployment.created_on).toLocaleString("zh-CN")}
-                                      </div>
-                                    )}
-                                    {deployment.build_config?.build_command && (
-                                      <div className="flex items-center gap-1 truncate">
-                                        <Code2 className="w-3 h-3 flex-shrink-0" />
-                                        <span className="truncate">{deployment.build_config.build_command}</span>
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  {/* 提交信息 */}
-                                  {deployment.deployment_trigger?.metadata && (
-                                    <div className="mt-2 text-xs text-muted-foreground">
-                                      <div className="flex items-center gap-1">
-                                        {deployment.deployment_trigger.metadata.commit_message && (
-                                          <span className="truncate">
-                                            💬 {deployment.deployment_trigger.metadata.commit_message}
-                                          </span>
-                                        )}
-                                      </div>
-                                      {deployment.deployment_trigger.metadata.branch && (
-                                        <div className="flex items-center gap-1 mt-0.5">
-                                          <span>分支: {deployment.deployment_trigger.metadata.branch}</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-
-                                <div className="flex items-center gap-1 flex-shrink-0">
-                                  {deployment.url && (
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-7 w-7 p-0"
-                                      onClick={() => window.open(deployment.url, "_blank")}
-                                    >
-                                      <Globe className="w-3.5 h-3.5" />
-                                    </Button>
-                                  )}
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-7 w-7 p-0"
-                                    onClick={async () => {
-                                      const email = getCookie("cf_email");
-                                      const apiKey = getCookie("cf_api_key");
-                                      if (!email || !apiKey || zones.length === 0) return;
-
-                                      const accountId = zones[0]?.account?.id;
-                                      if (!accountId || !selectedPagesProject) return;
-
-                                      if (
-                                        !confirm(
-                                          `确定要重新部署此版本吗？\n\n部署 ID: ${deployment.id.slice(0, 8)}\n环境: ${deployment.environment}`,
-                                        )
-                                      )
-                                        return;
-
-                                      setIsLoadingPages(true);
-                                      try {
-                                        const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-                                          body: {
-                                            action: "retry_pages_deployment",
-                                            email,
-                                            apiKey,
-                                            accountId,
-                                            projectName: selectedPagesProject,
-                                            deploymentId: deployment.id,
-                                          },
-                                        });
-
-                                        if (error) throw error;
-
-                                        if (data.success) {
-                                          toast({
-                                            title: "重新部署成功",
-                                            description: "部署已开始，请稍候...",
-                                          });
-                                          setTimeout(() => loadPagesDeployments(selectedPagesProject), 2000);
-                                        } else {
-                                          throw new Error(data.errors?.[0]?.message || "重新部署失败");
-                                        }
-                                      } catch (error: any) {
-                                        console.error("Retry deployment error:", error);
-                                        toast({
-                                          title: "重新部署失败",
-                                          description: error.message,
-                                          variant: "destructive",
-                                        });
-                                      } finally {
-                                        setIsLoadingPages(false);
-                                      }
-                                    }}
-                                    disabled={isLoadingPages}
-                                  >
-                                    <Play className="w-3.5 h-3.5" />
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
+                    if (data.success) {
+                      toast({
+                        title: "重新部署成功",
+                        description: "部署已开始，请稍候...",
+                      });
+                      setTimeout(() => loadPagesDeployments(selectedPagesProject), 2000);
+                    } else {
+                      throw new Error(data.errors?.[0]?.message || "重新部署失败");
+                    }
+                  } catch (err: any) {
+                    console.error("Retry deployment error:", err);
+                    toast({
+                      title: "重新部署失败",
+                      description: err.message,
+                      variant: "destructive",
+                    });
+                  } finally {
+                    setIsLoadingPages(false);
+                  }
+                }}
+                onCopyText={(text, description) => {
+                  navigator.clipboard.writeText(text);
+                  toast({ description });
+                }}
+              />
             )}
           </main>
         </div>
@@ -10383,143 +8381,21 @@ const Index = () => {
       )}
 
       {/* 新建 Pages 项目对话框 */}
-      <AlertDialog open={createPagesProjectOpen} onOpenChange={setCreatePagesProjectOpen}>
-        <AlertDialogContent className="max-w-2xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>创建 Pages 项目</AlertDialogTitle>
-            <AlertDialogDescription>选择部署方式在 Cloudflare Dashboard 中创建项目</AlertDialogDescription>
-          </AlertDialogHeader>
-
-          <div className="space-y-4 py-4">
-            {/* 部署方式选择 */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* 文件上传方式 */}
-              <Card
-                className="cursor-pointer hover:border-primary transition-all"
-                onClick={() => {
-                  const accountId = zones[0]?.account?.id;
-                  if (accountId) {
-                    window.open(`https://dash.cloudflare.com/${accountId}/pages/new/upload`, "_blank");
-                    setCreatePagesProjectOpen(false);
-                    toast({
-                      title: "正在前往 Dashboard",
-                      description: "完成后返回刷新即可看到新项目",
-                    });
-                  }
-                }}
-              >
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-lg">
-                    <Upload className="w-5 h-5" />
-                    上传文件部署
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-sm text-muted-foreground">直接上传静态网站文件到 Cloudflare Pages</p>
-
-                  <div className="space-y-2 text-sm">
-                    <div className="font-medium">支持方式：</div>
-                    <ul className="space-y-1 text-muted-foreground">
-                      <li className="flex items-start gap-2">
-                        <span className="text-primary mt-0.5">•</span>
-                        <span>Dashboard 拖拽上传整个文件夹</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="text-primary mt-0.5">•</span>
-                        <span>Wrangler CLI 命令行部署</span>
-                      </li>
-                    </ul>
-                  </div>
-
-                  <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                    <p className="text-xs text-blue-600 dark:text-blue-400">
-                      💡 推荐：Dashboard 支持拖拽上传，操作简单直观
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Git 仓库方式 */}
-              <Card
-                className="cursor-pointer hover:border-primary transition-all"
-                onClick={() => {
-                  const accountId = zones[0]?.account?.id;
-                  if (accountId) {
-                    window.open(`https://dash.cloudflare.com/${accountId}/pages/new`, "_blank");
-                    setCreatePagesProjectOpen(false);
-                    toast({
-                      title: "正在前往 Dashboard",
-                      description: "完成后返回刷新即可看到新项目",
-                    });
-                  }
-                }}
-              >
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-lg">
-                    <Code2 className="w-5 h-5" />
-                    连接 Git 仓库
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-sm text-muted-foreground">连接 GitHub/GitLab 实现自动化部署</p>
-
-                  <div className="space-y-2 text-sm">
-                    <div className="font-medium">功能特性：</div>
-                    <ul className="space-y-1 text-muted-foreground">
-                      <li className="flex items-start gap-2">
-                        <span className="text-primary mt-0.5">•</span>
-                        <span>代码提交自动触发部署</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="text-primary mt-0.5">•</span>
-                        <span>预览环境支持</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="text-primary mt-0.5">•</span>
-                        <span>回滚到任意版本</span>
-                      </li>
-                    </ul>
-                  </div>
-
-                  <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                    <p className="text-xs text-green-600 dark:text-green-400">✨ 推荐：适合持续开发的项目</p>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Wrangler CLI 使用说明 */}
-            <Card className="bg-muted/50">
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Code2 className="w-4 h-4" />
-                  使用 Wrangler CLI 部署
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="space-y-2 font-mono text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground">#</span>
-                    <code className="bg-background px-2 py-1 rounded">npm install -g wrangler</code>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground">#</span>
-                    <code className="bg-background px-2 py-1 rounded">wrangler login</code>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground">#</span>
-                    <code className="bg-background px-2 py-1 rounded">wrangler pages deploy &lt;directory&gt;</code>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          <AlertDialogFooter>
-            <AlertDialogCancel>关闭</AlertDialogCancel>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <CreatePagesProjectDialog
+        open={createPagesProjectOpen}
+        onOpenChange={setCreatePagesProjectOpen}
+        onSelectMethod={(method) => {
+          const accountId = zones[0]?.account?.id;
+          if (!accountId) return;
+          const path = method === "upload" ? "/pages/new/upload" : "/pages/new";
+          window.open(`https://dash.cloudflare.com/${accountId}${path}`, "_blank");
+          setCreatePagesProjectOpen(false);
+          toast({
+            title: "正在前往 Dashboard",
+            description: "完成后返回刷新即可看到新项目",
+          });
+        }}
+      />
     </SidebarProvider>
   );
 };

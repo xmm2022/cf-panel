@@ -97,7 +97,7 @@ npm run worker:dev
 
 仓库内已经附带 GitHub Pages 工作流：
 
-- [.github/workflows/github-pages.yml](/tmp/cf-panel-clean/.github/workflows/github-pages.yml:1)
+- [.github/workflows/github-pages.yml](./.github/workflows/github-pages.yml)
 
 ## 环境变量
 
@@ -124,6 +124,56 @@ Worker：
 - `.wrangler/`
 - 任何包含真实 Cloudflare / Supabase / GitHub Pages 资源 ID 的配置
 
+## 项目结构与扩展开发
+
+```
+src/
+  pages/
+    Index.tsx                    顶层协调器：导航 / 共享状态 / 跨模块回调
+  components/
+    index-page/                  Index 各视图按功能拆出的子模块
+      shared/
+        index-page-types.ts      多视图共享类型（如 KVNamespaceSummary）
+        formatters.ts            通用格式化纯函数（数值、字节、百分比）
+      analytics/                 已抽出：分析统计视图
+      pages/                     已抽出：Cloudflare Pages 管理 + 创建对话框
+      kv-storage/                已抽出：Workers KV 命名空间 / 键值对管理
+      <view-name>/               其他视图按相同模式逐步抽出
+    <Domain>Form.tsx             历史遗留的独立组件，按需迁移到 index-page/
+  lib/
+    supabase-adapter.ts          Worker API 客户端薄封装
+docs/
+  deployment.md                  生产部署步骤
+  superpowers/
+    plans/                       重构计划（可继续推进 Task 5-8）
+    specs/                       重构设计文档
+```
+
+### 添加新视图的推荐做法
+
+不要继续往 `Index.tsx` 堆 JSX。任何新增功能优先在 `src/components/index-page/<view>/` 下建模块：
+
+1. 用 TDD 流程，先写 `<View>.test.tsx`（覆盖空态、加载、关键回调 dispatch）
+2. 视图组件 props-driven，无 `any`；复杂类型放 `<view>-types.ts`
+3. 纯函数 helpers（解析、格式化、构建文件名等）放 `<view>-actions.ts` 并独立测试
+4. `Index.tsx` 只接组件、命名 async handler（`handle<View><Action>`）、通过 props 传给视图；toast / confirm 文字留在 Index 业务回调里
+5. 抽完用中文 UI 字符串集合 diff 验证行为等价（参考 analytics/pages/kv 三个模块的 commit message 验证清单）
+
+### 测试与质量门槛
+
+```bash
+npm run typecheck   # tsc --noEmit
+npm run lint        # eslint
+npm run test        # vitest run
+npm run build       # vite build
+```
+
+新模块应保持 lint 零 `any`、tsc 干净、build 通过。`Index.tsx` 仍残留若干历史 `any`，会随各视图陆续抽出而下降。
+
+### 重构进度
+
+`Index.tsx` 已从最初的 10527 行精简到约 8400 行，主要靠抽出 `analytics` / `pages` / `kv-storage` 三个模块。`docs/superpowers/plans/2026-05-22-index-page-modularization.md` 还列了 Page Rules / Certificates / Tunnels / D1 / R2 等剩余视图的抽取步骤，每个视图都可以独立完成、不影响已稳定的模块。
+
 ## License
 
-本仓库当前使用 `MIT` 许可证，见 [LICENSE](/tmp/cf-panel-clean/LICENSE:1)。
+本仓库当前使用 `MIT` 许可证，见 [LICENSE](./LICENSE)。
