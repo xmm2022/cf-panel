@@ -2291,32 +2291,11 @@ export function WorkersView({ scripts, isLoading, onRefresh, onCreate, onEdit, o
 
 `src/lib/providers/edgeone/workers.ts`
 
-```ts
-import type { WorkersCapability } from "../capabilities/workers";
-import type { WorkerScript } from "../types";
-import { callEdgeOne } from "./_invoke";
+Use EdgeOne's documented function APIs:
 
-interface RawFn { FunctionId: string; FunctionName: string; UpdateTime: string; }
-
-const normalize = (raw: RawFn): WorkerScript => ({ id: raw.FunctionName, modifiedOn: raw.UpdateTime });
-
-export const edgeoneWorkers: WorkersCapability = {
-  async list(creds) {
-    const result = await callEdgeOne<{ EdgeFunctions: RawFn[] }>("DescribeEdgeFunctions", creds, { Limit: 1000 });
-    return result.EdgeFunctions.map(normalize);
-  },
-  async getScript(creds, scriptName) {
-    const result = await callEdgeOne<{ Content: string }>("DescribeEdgeFunctionRuntimeEnvironment", creds, { FunctionName: scriptName });
-    return result.Content;
-  },
-  async putScript(creds, scriptName, source) {
-    await callEdgeOne<unknown>("ModifyEdgeFunction", creds, { FunctionName: scriptName, Content: source });
-  },
-  async deleteScript(creds, scriptName) {
-    await callEdgeOne<unknown>("DeleteEdgeFunction", creds, { FunctionName: scriptName });
-  },
-};
-```
+- List: `DescribeFunctions`, with required `ZoneId`, `Offset`, and `Limit <= 200`.
+- Response: normalize `Functions[]` using `Name`, `FunctionId`, `Content`, `CreateTime`, and `UpdateTime`.
+- Update/delete: resolve `ZoneId` + `FunctionId` first, then call `ModifyFunction` / `DeleteFunction`.
 
 In `src/lib/providers/edgeone/index.ts`, add `workers: edgeoneWorkers` to capabilities.
 
@@ -3076,4 +3055,3 @@ No "TBD" / "TODO". Each task has runnable code blocks and concrete commit messag
 P0 底盘 (Tasks 1-5) → P1 UI 抬层 (Tasks 6-8) → P2 EdgeOne 切片 (Tasks 9-11) → P3 能力补齐 + view 抽取 interleaved (Tasks 12-16) → P4 收尾 (Task 17). Matches the spec's Migration Strategy section.
 
 Total: 17 tasks, ~14-17 commits as the spec estimated. Each task self-contained with TDD discipline.
-

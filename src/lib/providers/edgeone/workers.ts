@@ -1,54 +1,102 @@
 import type { WorkersCapability } from "../capabilities/workers";
-import type { WorkerScript } from "../types";
+import type { ProviderCredentials, WorkerScript } from "../types";
 import { callEdgeOne } from "./_invoke";
+import { edgeoneZones } from "./zones";
 
-interface RawEdgeFunction {
+const EDGE_FUNCTION_PAGE_SIZE = 200;
+
+interface RawFunction {
   FunctionId: string;
-  FunctionName: string;
-  UpdateTime: string;
+  ZoneId: string;
+  Name: string;
+  Content?: string;
+  CreateTime?: string;
+  UpdateTime?: string;
 }
 
-interface DescribeEdgeFunctionsResponse {
-  EdgeFunctions: RawEdgeFunction[];
+interface DescribeFunctionsResponse {
+  Functions: RawFunction[];
   TotalCount: number;
 }
 
-function normalizeWorker(raw: RawEdgeFunction): WorkerScript {
+function normalizeWorker(raw: RawFunction): WorkerScript {
   return {
-    id: raw.FunctionName || raw.FunctionId,
-    modifiedOn: raw.UpdateTime,
+    id: raw.Name || raw.FunctionId,
+    modifiedOn: raw.UpdateTime || raw.CreateTime || "",
   };
+}
+
+async function listFunctionsInZone(creds: ProviderCredentials, zoneId: string) {
+  const functions: RawFunction[] = [];
+  let offset = 0;
+
+  while (true) {
+    const result = await callEdgeOne<DescribeFunctionsResponse>(
+      "DescribeFunctions",
+      creds,
+      { ZoneId: zoneId, Offset: offset, Limit: EDGE_FUNCTION_PAGE_SIZE },
+    );
+    const page = result.Functions ?? [];
+    functions.push(...page);
+
+    if (
+      page.length === 0 ||
+      page.length < EDGE_FUNCTION_PAGE_SIZE ||
+      functions.length >= result.TotalCount
+    ) {
+      break;
+    }
+
+    offset += page.length;
+  }
+
+  return functions;
+}
+
+async function listFunctions(creds: ProviderCredentials) {
+  const zones = await edgeoneZones.list(creds);
+  const functions: RawFunction[] = [];
+
+  for (const zone of zones) {
+    functions.push(...(await listFunctionsInZone(creds, zone.id)));
+  }
+
+  return functions;
+}
+
+async function findFunction(creds: ProviderCredentials, scriptName: string) {
+  return (await listFunctions(creds)).find(
+    (fn) => fn.Name === scriptName || fn.FunctionId === scriptName,
+  );
 }
 
 export const edgeoneWorkers: WorkersCapability = {
   async list(creds) {
-    const result = await callEdgeOne<DescribeEdgeFunctionsResponse>(
-      "DescribeEdgeFunctions",
-      creds,
-      { Limit: 1000 },
-    );
-    return result.EdgeFunctions.map(normalizeWorker);
+    return (await listFunctions(creds)).map(normalizeWorker);
   },
 
   async getScript(creds, scriptName) {
-    const result = await callEdgeOne<{ Content: string }>(
-      "DescribeEdgeFunctionRuntimeEnvironment",
-      creds,
-      { FunctionName: scriptName },
-    );
-    return result.Content;
+    return (await findFunction(creds, scriptName))?.Content ?? "";
   },
 
   async putScript(creds, scriptName, source) {
-    await callEdgeOne<unknown>("ModifyEdgeFunction", creds, {
-      FunctionName: scriptName,
+    const fn = await findFunction(creds, scriptName);
+    if (!fn) return;
+
+    await callEdgeOne<unknown>("ModifyFunction", creds, {
+      ZoneId: fn.ZoneId,
+      FunctionId: fn.FunctionId,
       Content: source,
     });
   },
 
   async deleteScript(creds, scriptName) {
-    await callEdgeOne<unknown>("DeleteEdgeFunction", creds, {
-      FunctionName: scriptName,
+    const fn = await findFunction(creds, scriptName);
+    if (!fn) return;
+
+    await callEdgeOne<unknown>("DeleteFunction", creds, {
+      ZoneId: fn.ZoneId,
+      FunctionId: fn.FunctionId,
     });
   },
 };

@@ -301,7 +301,7 @@ const loadZones = async () => {
 | zones | `DescribeZones` / `CreateZone` / `DeleteZone` | |
 | dns | `DescribeDnsRecords` / `CreateDnsRecord` / `ModifyDnsRecord` / `DeleteDnsRecord` | |
 | pageRules | `DescribeRules` / `CreateRule` / `ModifyRule` / `DeleteRule` | EdgeOne 的"规则引擎"概念比 CF Page Rules 复杂，view 先做最小映射 |
-| workers | `DescribeEdgeFunctions` / `CreateEdgeFunction` / ... | EdgeOne Workers 全称 Edge Functions |
+| workers | `DescribeFunctions` / `CreateFunction` / `ModifyFunction` / `DeleteFunction` | 边缘函数接口需要 `ZoneId` |
 | kv | `DescribeKvNamespaces` / ... | |
 | certificates | `DescribeHostsCertificate` / `ModifyHostsCertificate` | |
 | analytics | `DescribeOverviewL7Data` / `DescribeTimingL7AnalysisData` | 只展示曲线 + 总览 |
