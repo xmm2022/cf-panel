@@ -80,10 +80,12 @@ export function WorkersView({
                 {isLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
                 刷新
               </Button>
-              <Button onClick={onCreate} disabled={isLoading}>
-                <Plus className="w-4 h-4 mr-2" />
-                新建 Worker
-              </Button>
+              {onCreate && (
+                <Button onClick={onCreate} disabled={isLoading}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  新建 Worker
+                </Button>
+              )}
             </div>
           </div>
         </CardHeader>
@@ -104,8 +106,10 @@ export function WorkersView({
                 return (
                   <div
                     key={worker.id}
-                    className="flex items-center justify-between p-4 rounded-lg border border-border/50 hover:border-primary/50 hover:bg-muted/50 transition-all cursor-pointer gap-4"
-                    onClick={() => onEdit(worker.id)}
+                    className={`flex items-center justify-between p-4 rounded-lg border border-border/50 hover:border-primary/50 hover:bg-muted/50 transition-all gap-4 ${
+                      onEdit ? "cursor-pointer" : ""
+                    }`}
+                    onClick={() => onEdit?.(worker.id)}
                   >
                     <div className="flex-1 min-w-0">
                       <h3 className="font-semibold truncate">{worker.id}</h3>
@@ -259,13 +263,17 @@ export function WorkersView({
                           <Settings className="w-4 h-4" />
                         </Button>
                       )}
-                      <Button size="sm" variant="outline" onClick={() => onEdit(worker.id)}>
-                        <Edit className="w-4 h-4 mr-1" />
-                        编辑
-                      </Button>
-                      <Button size="sm" variant="destructive" onClick={() => onDelete(worker.id)}>
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
+                      {onEdit && (
+                        <Button size="sm" variant="outline" onClick={() => onEdit(worker.id)}>
+                          <Edit className="w-4 h-4 mr-1" />
+                          编辑
+                        </Button>
+                      )}
+                      {onDelete && (
+                        <Button size="sm" variant="destructive" onClick={() => onDelete(worker.id)}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      )}
                     </div>
                   </div>
                 );

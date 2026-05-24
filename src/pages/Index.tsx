@@ -393,6 +393,118 @@ function unwrapProviderApiEnvelope<T>(
   return response?.data ?? response ?? undefined;
 }
 
+function getAccountDisplayName(account: CloudflareAccount): string {
+  switch (account.provider) {
+    case "cloudflare":
+      return account.credentials.provider === "cloudflare"
+        ? account.credentials.email
+        : account.label;
+    case "edgeone":
+      return account.credentials.provider === "edgeone"
+        ? account.label || account.credentials.secretId
+        : account.label;
+    case "esa":
+      return account.credentials.provider === "esa"
+        ? account.label || account.credentials.accessKeyId
+        : account.label;
+  }
+}
+
+function getAccountDescription(account: CloudflareAccount): string | undefined {
+  switch (account.provider) {
+    case "cloudflare":
+      return account.nickname;
+    case "edgeone":
+      return account.credentials.provider === "edgeone"
+        ? `SecretId: ${account.credentials.secretId}`
+        : undefined;
+    case "esa":
+      return account.credentials.provider === "esa"
+        ? `AccessKeyId: ${account.credentials.accessKeyId}`
+        : undefined;
+  }
+}
+
+function getProviderEmptyZonesText(providerId: ProviderId): string {
+  switch (providerId) {
+    case "cloudflare":
+      return "未找到域名，请在 Cloudflare 中添加域名";
+    case "edgeone":
+      return "未找到站点，请在腾讯云 EdgeOne 中添加站点";
+    case "esa":
+      return "阿里云 ESA 暂未接入域名管理";
+  }
+}
+
+function providerHasImplementedCapabilities(providerId: ProviderId): boolean {
+  return Object.keys(providers[providerId].capabilities).length > 0;
+}
+
+function getCredentialCopy(providerId: ProviderId): {
+  primaryLabel: string;
+  primaryPlaceholder: string;
+  secretLabel: string;
+  secretPlaceholder: string;
+  helpText: string;
+} {
+  switch (providerId) {
+    case "cloudflare":
+      return {
+        primaryLabel: "Cloudflare 账号邮箱",
+        primaryPlaceholder: "your@email.com",
+        secretLabel: "Cloudflare API 密钥",
+        secretPlaceholder: "您的 API 密钥",
+        helpText: "点击右上角头像→ 配置文件→ API 令牌→ 下拉到API 密钥→ 查看或创建Global API Key",
+      };
+    case "edgeone":
+      return {
+        primaryLabel: "腾讯云 SecretId",
+        primaryPlaceholder: "AKID...",
+        secretLabel: "腾讯云 SecretKey",
+        secretPlaceholder: "您的 SecretKey",
+        helpText: "使用拥有 EdgeOne 读取/管理权限的腾讯云 API 密钥。",
+      };
+    case "esa":
+      return {
+        primaryLabel: "阿里云 AccessKeyId",
+        primaryPlaceholder: "LTAI...",
+        secretLabel: "阿里云 AccessKeySecret",
+        secretPlaceholder: "您的 AccessKeySecret",
+        helpText: "阿里云 ESA 后端能力暂未接入，当前版本不会保存或验证该凭据。",
+      };
+  }
+}
+
+function buildCredentialsFromFields(
+  providerId: ProviderId,
+  primary: string,
+  secret: string,
+): ProviderCredentials | null {
+  const first = primary.trim();
+  const second = secret.trim();
+  if (!first || !second) return null;
+
+  switch (providerId) {
+    case "cloudflare":
+      return { provider: "cloudflare", email: first, apiKey: second };
+    case "edgeone":
+      return { provider: "edgeone", secretId: first, secretKey: second };
+    case "esa":
+      return { provider: "esa", accessKeyId: first, accessKeySecret: second };
+  }
+}
+
+function getCredentialAccountLabel(credentials: ProviderCredentials): string {
+  switch (credentials.provider) {
+    case "cloudflare":
+      return credentials.email;
+    case "edgeone":
+      return credentials.secretId;
+    case "esa":
+      return credentials.accessKeyId;
+  }
+}
+
 const Index = () => {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -555,10 +667,74 @@ const Index = () => {
   const hasInitializedAccountRef = useRef(false);
 
   const provider = providers[activeProviderId];
+  const isCloudflareProvider = activeProviderId === "cloudflare";
+  const credentialCopy = getCredentialCopy(activeProviderId);
+  const activeProviderAccounts = savedAccounts.filter(
+    (account) => account.provider === activeProviderId,
+  );
+  const currentAccount =
+    savedAccounts.find(
+      (account) => account.id === currentAccountId && account.provider === activeProviderId,
+    ) ?? null;
+  const currentAccountDisplayName = currentAccount
+    ? getAccountDisplayName(currentAccount)
+    : cfEmail;
+
+  const setCredentialFieldsFromAccount = (account: CloudflareAccount) => {
+    switch (account.provider) {
+      case "cloudflare":
+        setCfEmail(account.credentials.provider === "cloudflare" ? account.credentials.email : "");
+        setCfApiKey(account.credentials.provider === "cloudflare" ? account.credentials.apiKey : "");
+        break;
+      case "edgeone":
+        setCfEmail(account.credentials.provider === "edgeone" ? account.credentials.secretId : "");
+        setCfApiKey(account.credentials.provider === "edgeone" ? account.credentials.secretKey : "");
+        break;
+      case "esa":
+        setCfEmail(account.credentials.provider === "esa" ? account.credentials.accessKeyId : "");
+        setCfApiKey(account.credentials.provider === "esa" ? account.credentials.accessKeySecret : "");
+        break;
+    }
+  };
+
+  const clearProviderResourceState = () => {
+    setZones([]);
+    setSelectedZone("");
+    setSelectedZoneName("");
+    setDnsRecords([]);
+    setWorkerRoutes([]);
+    setWorkers([]);
+    setSelectedWorker("");
+    setWorkerDetail(null);
+    setWorkerBindings([]);
+    setAllWorkerBindings({});
+    setD1Databases([]);
+    setR2Buckets([]);
+    setTunnels([]);
+    setCertificates([]);
+    setKvNamespaces([]);
+    setSelectedKvNamespace("");
+    setKvKeys([]);
+    setSelectedKvKeys([]);
+    setPagesProjects([]);
+    setSelectedPagesProject("");
+    setPagesDeployments([]);
+    setAnalyticsPoints([]);
+    setPageRules([]);
+    setEditingPageRuleId(null);
+    setNewPageRule(createEmptyPageRuleForm());
+    setActiveView("zones");
+  };
 
   const getActiveCredentials = useCallback(
-    (override?: { email: string; apiKey: string }): ProviderCredentials | null => {
+    (
+      override?: ProviderCredentials | { email: string; apiKey: string },
+    ): ProviderCredentials | null => {
       if (override) {
+        if ("provider" in override) {
+          return override;
+        }
+
         return {
           provider: "cloudflare",
           email: override.email,
@@ -606,17 +782,30 @@ const Index = () => {
   );
 
   const handleProviderChange = (nextProviderId: ProviderId) => {
+    if (nextProviderId === activeProviderId) return;
+
+    clearProviderResourceState();
     setActiveProviderId(nextProviderId);
     setSearchParams((previousParams) => {
       const nextParams = new URLSearchParams(previousParams);
       nextParams.set("provider", nextProviderId);
       return nextParams;
     });
-    setSelectedZone("");
-    setSelectedZoneName("");
-    setDnsRecords([]);
-    setWorkerRoutes([]);
-    setActiveView("zones");
+
+    const nextAccount = savedAccounts.find((account) => account.provider === nextProviderId) ?? null;
+    if (!nextAccount || !providerHasImplementedCapabilities(nextProviderId)) {
+      setCurrentAccountId(null);
+      setCfEmail("");
+      setCfApiKey("");
+      setHasCredentials(false);
+      return;
+    }
+
+    setCurrentAccount(nextAccount.id);
+    setCurrentAccountId(nextAccount.id);
+    setCredentialFieldsFromAccount(nextAccount);
+    setHasCredentials(true);
+    void loadZones(nextAccount.credentials);
   };
 
   // 从 D1 数据库加载 Workers 隐藏设置
@@ -1927,11 +2116,24 @@ const Index = () => {
     }
   };
 
-  const verifyAndSaveCredentials = async (email?: string, apiKey?: string) => {
-    const useEmail = email || cfEmail;
-    const useApiKey = apiKey || cfApiKey;
+  const verifyAndSaveCredentials = async (primary?: string, secret?: string) => {
+    const activeProvider = providers[activeProviderId];
+    if (!providerHasImplementedCapabilities(activeProviderId)) {
+      toast({
+        title: "暂未接入",
+        description: `${activeProvider.label} 后端能力暂未接入`,
+        variant: "destructive",
+      });
+      return;
+    }
 
-    if (!useEmail || !useApiKey) {
+    const credentials = buildCredentialsFromFields(
+      activeProviderId,
+      primary ?? cfEmail,
+      secret ?? cfApiKey,
+    );
+
+    if (!credentials) {
       toast({
         title: "请输入完整凭据",
         variant: "destructive",
@@ -1941,42 +2143,60 @@ const Index = () => {
 
     setIsVerifying(true);
     try {
-      // 使用外部 Worker API 进行验证（通过 supabase-adapter）
-      const { data, error } = await supabase.functions.invoke("verify-cloudflare", {
-        body: {
-          email: useEmail,
-          apiKey: useApiKey,
-        },
-      });
+      const zonesCapability = activeProvider.capabilities.zones;
 
-      if (error) throw error;
-
-      if (!data.success) {
+      if (!zonesCapability) {
         toast({
-          title: "验证失败",
-          description: data.error || "无法验证 Cloudflare 凭据",
+          title: "暂未接入",
+          description: `${activeProvider.label} 后端能力暂未接入`,
           variant: "destructive",
         });
         return;
       }
 
+      if (credentials.provider === "cloudflare") {
+        // 使用外部 Worker API 进行验证（通过 supabase-adapter）
+        const { data, error } = await supabase.functions.invoke("verify-cloudflare", {
+          body: {
+            email: credentials.email,
+            apiKey: credentials.apiKey,
+          },
+        });
+
+        if (error) throw error;
+
+        if (!data.success) {
+          toast({
+            title: "验证失败",
+            description: data.error || "无法验证 Cloudflare 凭据",
+            variant: "destructive",
+          });
+          return;
+        }
+      } else {
+        await zonesCapability.list(credentials);
+      }
+
       // 保存到多账号系统
-      const account = saveAccount(useEmail, useApiKey);
+      const account = saveAccount({
+        provider: credentials.provider,
+        label: getCredentialAccountLabel(credentials),
+        credentials,
+      });
       setCurrentAccount(account.id);
       setCurrentAccountId(account.id);
 
       // 更新状态
       setSavedAccounts(getAllAccounts());
       setHasCredentials(true);
-      setCfEmail(useEmail);
-      setCfApiKey(useApiKey);
+      setCredentialFieldsFromAccount(account);
 
       toast({
         title: "凭据验证成功",
         description: "正在加载数据...",
       });
 
-      await loadZones({ email: useEmail, apiKey: useApiKey });
+      await loadZones(credentials);
     } catch (error) {
       console.error("验证错误:", error);
       toast({
@@ -1994,30 +2214,32 @@ const Index = () => {
     const account = savedAccounts.find((acc) => acc.id === accountId);
     if (!account) return;
 
-    // 清空当前选择的域名与相关数据，避免显示上一个账号的数据
-    setSelectedZone("");
-    setSelectedZoneName("");
-    setDnsRecords([]);
-    setWorkerRoutes([]);
-    setWorkers([]);
-    setSelectedWorker("");
-    setWorkerDetail(null);
+    clearProviderResourceState();
+    if (account.provider !== activeProviderId) {
+      setActiveProviderId(account.provider);
+      setSearchParams((previousParams) => {
+        const nextParams = new URLSearchParams(previousParams);
+        nextParams.set("provider", account.provider);
+        return nextParams;
+      });
+    }
 
     // 更新账号信息
     setCurrentAccount(accountId);
     setCurrentAccountId(accountId);
-    setCfEmail(account.email);
-    setCfApiKey(account.apiKey);
-    // 回到域名管理视图（等同用户点击“域名管理”）
-    setActiveView("zones");
+    setCredentialFieldsFromAccount(account);
 
     // 刷新域名列表（使用新账号凭据）
     toast({
       title: "账号已切换",
-      description: `正在加载 ${account.email} 的数据...`,
+      description: `正在加载 ${getAccountDisplayName(account)} 的数据...`,
     });
 
-    await loadZones({ email: account.email, apiKey: account.apiKey });
+    const canLoad = providerHasImplementedCapabilities(account.provider);
+    setHasCredentials(canLoad);
+    if (canLoad) {
+      await loadZones(account.credentials);
+    }
   };
 
   // 删除账号
@@ -2025,7 +2247,8 @@ const Index = () => {
     const account = savedAccounts.find((acc) => acc.id === accountId);
     if (!account) return;
 
-    if (!confirm(`确定要删除账号 ${account.email} 吗？`)) return;
+    const displayName = getAccountDisplayName(account);
+    if (!confirm(`确定要删除账号 ${displayName} 吗？`)) return;
 
     const success = deleteAccount(accountId);
     if (success) {
@@ -2043,7 +2266,7 @@ const Index = () => {
 
       toast({
         title: "账号已删除",
-        description: `${account.email} 已从列表中移除`,
+        description: `${displayName} 已从列表中移除`,
       });
     }
   };
@@ -2123,7 +2346,7 @@ const Index = () => {
     }
   };
 
-  const loadZones = useCallback(async (override?: { email: string; apiKey: string }) => {
+  const loadZones = useCallback(async (override?: ProviderCredentials | { email: string; apiKey: string }) => {
     const credentials = getActiveCredentials(override);
     const zonesCapability = credentials
       ? providers[credentials.provider].capabilities.zones
@@ -2154,13 +2377,13 @@ const Index = () => {
     // 尝试恢复当前账号
     const currentAcc = getCurrentAccount();
 
-    // 迁移旧的 sessionStorage 或 cookie 凭据到新的账号系统
+    // 迁移旧的 sessionStorage 或 cookie 凭据到新的账号系统，仅适用于 Cloudflare。
     const oldEmail = sessionStorage.getItem("cf_email");
     const oldApiKey = sessionStorage.getItem("cf_api_key");
     const cookieEmail = getCookie("cf_email");
     const cookieApiKey = getCookie("cf_api_key");
 
-    if (oldEmail && oldApiKey) {
+    if (activeProviderId === "cloudflare" && oldEmail && oldApiKey) {
       // 迁移 sessionStorage
       const migratedAccount = saveAccount(oldEmail, oldApiKey);
       setCurrentAccount(migratedAccount.id);
@@ -2180,7 +2403,7 @@ const Index = () => {
       return;
     }
 
-    if (cookieEmail && cookieApiKey && !currentAcc) {
+    if (activeProviderId === "cloudflare" && cookieEmail && cookieApiKey && !currentAcc) {
       // 迁移 cookie 到账号系统
       const migratedAccount = saveAccount(cookieEmail, cookieApiKey);
       setCurrentAccount(migratedAccount.id);
@@ -2197,17 +2420,20 @@ const Index = () => {
       return;
     }
 
-    if (currentAcc) {
+    if (currentAcc?.provider === activeProviderId) {
       // 使用保存的当前账号
-      setCfEmail(currentAcc.email);
-      setCfApiKey(currentAcc.apiKey);
+      setCredentialFieldsFromAccount(currentAcc);
       setHasCredentials(true);
       setCurrentAccountId(currentAcc.id);
 
-      setTimeout(() => loadZones({ email: currentAcc.email, apiKey: currentAcc.apiKey }), 100);
-      void loadWorkersHiddenSetting();
+      if (providerHasImplementedCapabilities(currentAcc.provider)) {
+        setTimeout(() => loadZones(currentAcc.credentials), 100);
+      }
+      if (currentAcc.provider === "cloudflare") {
+        void loadWorkersHiddenSetting();
+      }
     }
-  }, [loadZones, loadWorkersHiddenSetting]);
+  }, [activeProviderId, loadZones, loadWorkersHiddenSetting]);
 
   const loadWorkerBindings = async (workerId: string, accountId: string) => {
     const email = cfEmail || getCookie("cf_email");
@@ -2251,19 +2477,21 @@ const Index = () => {
       const records = await dnsCapability.list(credentials, zoneId);
       setDnsRecords(records.map(toLegacyDnsRecord));
 
-      // 加载Worker路由
-      const { data: routesData, error: routesError } = await invokeProviderApi<ProviderApiEnvelope<WorkerRoute[]>>(
-        "auto",
-        {
-          action: "list_worker_routes",
-          zoneId,
-        },
-        credentials,
-      );
+      if (credentials.provider === "cloudflare") {
+        // 加载Worker路由
+        const { data: routesData, error: routesError } = await invokeProviderApi<ProviderApiEnvelope<WorkerRoute[]>>(
+          "auto",
+          {
+            action: "list_worker_routes",
+            zoneId,
+          },
+          credentials,
+        );
 
-      const routes = !routesError ? unwrapProviderApiResult(routesData) : undefined;
-      if (routes) {
-        setWorkerRoutes(routes);
+        const routes = !routesError ? unwrapProviderApiResult(routesData) : undefined;
+        setWorkerRoutes(routes ?? []);
+      } else {
+        setWorkerRoutes([]);
       }
     } catch (error) {
       console.error("Load DNS records error:", error);
@@ -2971,6 +3199,15 @@ const Index = () => {
 
     setIsLoading(true);
     try {
+      const workersList = (await workersCapability.list(credentials)).map(toLegacyWorker);
+      setWorkers(workersList);
+
+      if (credentials.provider !== "cloudflare") {
+        setWorkerSubdomain("");
+        setAllWorkerBindings({});
+        return;
+      }
+
       let accountId = zones[0]?.account?.id;
 
       if (!accountId) {
@@ -3008,9 +3245,6 @@ const Index = () => {
         // 如果 API 调用失败且没有缓存，使用 accountId 前8位作为占位符
         setWorkerSubdomain(accountId.slice(0, 8));
       }
-
-      const workersList = (await workersCapability.list(credentials)).map(toLegacyWorker);
-      setWorkers(workersList);
 
       // 为每个 Worker 加载 bindings
       if (accountId && workersList.length > 0) {
@@ -3571,34 +3805,41 @@ const Index = () => {
           <div className="max-w-2xl mx-auto">
             <div className="text-center mb-8">
               <h2 className="text-4xl font-bold mb-4 bg-gradient-to-r from-primary via-primary to-accent bg-clip-text text-transparent">
-                连接您的 Cloudflare 账号
+                连接您的 {provider.label} 账号
               </h2>
               <p className="text-muted-foreground">
-                {savedAccounts.length > 0 ? "选择已保存的账号或添加新账号" : "输入凭据后即可管理和使用强大的Cloudflare"}
+                {activeProviderAccounts.length > 0
+                  ? `选择已保存的 ${provider.label} 账号或添加新账号`
+                  : `输入凭据后即可管理 ${provider.label}`}
               </p>
+              <div className="mt-4 flex justify-center">
+                <ProviderSwitcher active={activeProviderId} onChange={handleProviderChange} />
+              </div>
             </div>
 
             {/* 已保存的账号列表 */}
-            {savedAccounts.length > 0 && (
+            {activeProviderAccounts.length > 0 && (
               <div className="mb-6">
                 <Card className="shadow-card">
                   <CardHeader>
-                    <CardTitle className="text-sm">已保存的账号</CardTitle>
+                    <CardTitle className="text-sm">已保存的 {provider.label} 账号</CardTitle>
                     <CardDescription className="text-xs">点击账号快速登录</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2">
-                    {savedAccounts.map((account) => (
+                    {activeProviderAccounts.map((account) => (
                       <div
                         key={account.id}
                         className="flex items-center justify-between p-3 border border-border/50 rounded-lg hover:bg-accent/50 transition-colors cursor-pointer group"
                         onClick={() => {
-                          verifyAndSaveCredentials(account.email, account.apiKey);
+                          switchAccount(account.id);
                         }}
                       >
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium text-sm truncate">{account.email}</div>
-                          {account.nickname && (
-                            <div className="text-xs text-muted-foreground truncate">{account.nickname}</div>
+                          <div className="font-medium text-sm truncate">{getAccountDisplayName(account)}</div>
+                          {getAccountDescription(account) && (
+                            <div className="text-xs text-muted-foreground truncate">
+                              {getAccountDescription(account)}
+                            </div>
                           )}
                           <div className="text-xs text-muted-foreground">
                             添加于 {new Date(account.addedAt).toLocaleString("zh-CN")}
@@ -3610,14 +3851,7 @@ const Index = () => {
                           className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10 hover:text-destructive"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (confirm(`确定要删除账号 ${account.email} 吗？`)) {
-                              deleteAccount(account.id);
-                              setSavedAccounts(getAllAccounts());
-                              toast({
-                                title: "账号已删除",
-                                description: `${account.email} 已从列表中移除`,
-                              });
-                            }
+                            handleDeleteAccount(account.id);
                           }}
                         >
                           <Trash2 className="w-4 h-4" />
@@ -3633,7 +3867,7 @@ const Index = () => {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Globe className="w-5 h-5" />
-                  {savedAccounts.length > 0 ? "添加新账号" : "Cloudflare 凭据"}
+                  {activeProviderAccounts.length > 0 ? "添加新账号" : `${provider.label} 凭据`}
                 </CardTitle>
                 <CardDescription>您的凭据将安全存储在本地浏览器中</CardDescription>
               </CardHeader>
@@ -3647,23 +3881,23 @@ const Index = () => {
                 >
                   <div className="space-y-4">
                     <div>
-                      <Label htmlFor="cfEmail">Cloudflare 账号邮箱</Label>
+                      <Label htmlFor="cfEmail">{credentialCopy.primaryLabel}</Label>
                       <Input
                         id="cfEmail"
                         name="cfEmail"
-                        type="email"
+                        type={isCloudflareProvider ? "email" : "text"}
                         autoComplete="off"
                         autoCapitalize="none"
                         autoCorrect="off"
                         spellCheck={false}
                         value={cfEmail}
                         onChange={(e) => setCfEmail(e.target.value)}
-                        placeholder="your@email.com"
+                        placeholder={credentialCopy.primaryPlaceholder}
                         className="mt-1.5"
                       />
                     </div>
                     <div>
-                      <Label htmlFor="cfApiKey">Cloudflare API 密钥</Label>
+                      <Label htmlFor="cfApiKey">{credentialCopy.secretLabel}</Label>
                       <Input
                         id="cfApiKey"
                         name="cfApiKey"
@@ -3674,16 +3908,16 @@ const Index = () => {
                         spellCheck={false}
                         value={cfApiKey}
                         onChange={(e) => setCfApiKey(e.target.value)}
-                        placeholder="您的 API 密钥"
+                        placeholder={credentialCopy.secretPlaceholder}
                         className="mt-1.5"
                       />
                       <p className="text-xs text-muted-foreground mt-1.5">
-                        点击右上角头像→ 配置文件→ API 令牌→ 下拉到API 密钥→ 查看或创建Global API Key
+                        {credentialCopy.helpText}
                       </p>
                     </div>
                     <Button
                       type="submit"
-                      disabled={isVerifying}
+                      disabled={isVerifying || !providerHasImplementedCapabilities(activeProviderId)}
                       className="w-full bg-gradient-to-r from-primary to-accent hover:opacity-90 shadow-glow"
                     >
                       {isVerifying ? (
@@ -3691,6 +3925,8 @@ const Index = () => {
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                           验证中...
                         </>
+                      ) : !providerHasImplementedCapabilities(activeProviderId) ? (
+                        "暂未接入"
                       ) : (
                         "验证并进入管理后台"
                       )}
@@ -3701,7 +3937,7 @@ const Index = () => {
             </Card>
 
             {/* 注册 Cloudflare 账号提示 */}
-            <div className="mt-6 text-center">
+            {isCloudflareProvider && <div className="mt-6 text-center">
               <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
                 <span>还没有 Cloudflare 账号？</span>
                 <Button
@@ -3715,7 +3951,7 @@ const Index = () => {
               <p className="text-xs text-muted-foreground mt-2">
                 注册后，您可以免费使用 Cloudflare 的 CDN、DNS 和其他强大功能
               </p>
-            </div>
+            </div>}
           </div>
         </section>
 
@@ -3764,13 +4000,15 @@ const Index = () => {
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <div className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity">
-                        <p className="text-xs text-muted-foreground truncate">{cfEmail}</p>
+                        <p className="text-xs text-muted-foreground truncate">{currentAccountDisplayName}</p>
                         <ChevronDown className="w-3 h-3 text-muted-foreground flex-shrink-0" />
                       </div>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start" className="w-[280px] bg-background border-border z-50">
-                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">已保存的账号</div>
-                      {savedAccounts.map((account) => (
+                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                        已保存的 {provider.label} 账号
+                      </div>
+                      {activeProviderAccounts.map((account) => (
                         <DropdownMenuItem
                           key={account.id}
                           className="flex items-center justify-between cursor-pointer focus:bg-accent"
@@ -3785,13 +4023,16 @@ const Index = () => {
                               <Check className="w-4 h-4 text-primary flex-shrink-0" />
                             )}
                             <div className="flex-1 min-w-0">
-                              <div className="text-sm font-medium truncate">{account.email}</div>
-                              {account.nickname && (
-                                <div className="text-xs text-muted-foreground truncate">{account.nickname}</div>
+                              <div className="text-sm font-medium truncate">{getAccountDisplayName(account)}</div>
+                              <div className="text-xs text-muted-foreground truncate">{providers[account.provider].label}</div>
+                              {getAccountDescription(account) && (
+                                <div className="text-xs text-muted-foreground truncate">
+                                  {getAccountDescription(account)}
+                                </div>
                               )}
                             </div>
                           </div>
-                          {savedAccounts.length > 1 && (
+                          {activeProviderAccounts.length > 1 && (
                             <Button
                               variant="ghost"
                               size="sm"
@@ -3827,27 +4068,31 @@ const Index = () => {
               <SidebarGroupContent>
                 <SidebarMenu>
                   {renderCapabilitySidebarItem("zones")}
-                  <SidebarMenuItem>
-                    <SidebarMenuButton onClick={() => setActiveView("deploy")} isActive={activeView === "deploy"}>
-                      <Zap className="w-4 h-4" />
-                      <span>一键加速</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => {
-                        if (!selectedZone && zones.length > 0) {
-                          setSelectedZone(zones[0].id);
-                          setSelectedZoneName(zones[0].name);
-                        }
-                        setActiveView("auto-optimization");
-                      }}
-                      isActive={activeView === "auto-optimization"}
-                    >
-                      <Settings className="w-4 h-4" />
-                      <span>自动优化</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  {isCloudflareProvider && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton onClick={() => setActiveView("deploy")} isActive={activeView === "deploy"}>
+                        <Zap className="w-4 h-4" />
+                        <span>一键加速</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
+                  {isCloudflareProvider && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        onClick={() => {
+                          if (!selectedZone && zones.length > 0) {
+                            setSelectedZone(zones[0].id);
+                            setSelectedZoneName(zones[0].name);
+                          }
+                          setActiveView("auto-optimization");
+                        }}
+                        isActive={activeView === "auto-optimization"}
+                      >
+                        <Settings className="w-4 h-4" />
+                        <span>自动优化</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       onClick={() => setActiveView("operation-history")}
@@ -3862,15 +4107,17 @@ const Index = () => {
                   {renderCapabilitySidebarItem("d1")}
                   {renderCapabilitySidebarItem("r2")}
                   {renderCapabilitySidebarItem("kv")}
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => setActiveView("worker-templates")}
-                      isActive={activeView === "worker-templates"}
-                    >
-                      <Code2 className="w-4 h-4" />
-                      <span>Worker 模板库</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  {isCloudflareProvider && (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        onClick={() => setActiveView("worker-templates")}
+                        isActive={activeView === "worker-templates"}
+                      >
+                        <Code2 className="w-4 h-4" />
+                        <span>Worker 模板库</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )}
                   {renderCapabilitySidebarItem("tunnels")}
                   <SidebarMenuItem>
                     <SidebarMenuButton onClick={() => setActiveView("feedback")} isActive={activeView === "feedback"}>
@@ -3883,7 +4130,7 @@ const Index = () => {
             </SidebarGroup>
 
             {/* 管理员控制 */}
-            {isAdmin && (
+            {isAdmin && isCloudflareProvider && (
               <SidebarGroup>
                 <SidebarGroupLabel>管理员控制</SidebarGroupLabel>
                 <SidebarGroupContent>
@@ -3964,41 +4211,47 @@ const Index = () => {
                 <SidebarGroupContent>
                   <SidebarMenu>
                     {renderCapabilitySidebarItem("dns")}
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        onClick={() => {
-                          setActiveView("ssl");
-                          if (selectedZone) {
-                            loadZoneSettings(selectedZone);
-                          }
-                        }}
-                        isActive={activeView === "ssl"}
-                      >
-                        <Shield className="w-4 h-4" />
-                        <span>SSL/TLS</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton onClick={() => setActiveView("cache")} isActive={activeView === "cache"}>
-                        <Database className="w-4 h-4" />
-                        <span>缓存管理</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        onClick={() => {
-                          setActiveView("firewall");
-                          if (selectedZone) {
-                            loadFirewallRules(selectedZone);
-                            loadRateLimitRules(selectedZone);
-                          }
-                        }}
-                        isActive={activeView === "firewall"}
-                      >
-                        <Shield className="w-4 h-4" />
-                        <span>防火墙</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
+                    {isCloudflareProvider && (
+                      <SidebarMenuItem>
+                        <SidebarMenuButton
+                          onClick={() => {
+                            setActiveView("ssl");
+                            if (selectedZone) {
+                              loadZoneSettings(selectedZone);
+                            }
+                          }}
+                          isActive={activeView === "ssl"}
+                        >
+                          <Shield className="w-4 h-4" />
+                          <span>SSL/TLS</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )}
+                    {isCloudflareProvider && (
+                      <SidebarMenuItem>
+                        <SidebarMenuButton onClick={() => setActiveView("cache")} isActive={activeView === "cache"}>
+                          <Database className="w-4 h-4" />
+                          <span>缓存管理</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )}
+                    {isCloudflareProvider && (
+                      <SidebarMenuItem>
+                        <SidebarMenuButton
+                          onClick={() => {
+                            setActiveView("firewall");
+                            if (selectedZone) {
+                              loadFirewallRules(selectedZone);
+                              loadRateLimitRules(selectedZone);
+                            }
+                          }}
+                          isActive={activeView === "firewall"}
+                        >
+                          <Shield className="w-4 h-4" />
+                          <span>防火墙</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )}
                     {renderCapabilitySidebarItem("analytics")}
                     {renderCapabilitySidebarItem("page-rules")}
                     {renderCapabilitySidebarItem("certificates")}
@@ -4050,14 +4303,14 @@ const Index = () => {
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <AlertDialogCancel>取消</AlertDialogCancel>
-                      {savedAccounts.length > 1 && (
+                      {activeProviderAccounts.length > 1 && (
                         <Button
                           variant="outline"
                           onClick={() => {
                             // 切换到下一个账号
-                            const currentIndex = savedAccounts.findIndex((acc) => acc.id === currentAccountId);
-                            const nextIndex = (currentIndex + 1) % savedAccounts.length;
-                            const nextAccount = savedAccounts[nextIndex];
+                            const currentIndex = activeProviderAccounts.findIndex((acc) => acc.id === currentAccountId);
+                            const nextIndex = (currentIndex + 1) % activeProviderAccounts.length;
+                            const nextAccount = activeProviderAccounts[nextIndex];
                             switchAccount(nextAccount.id);
                             setLogoutDialogOpen(false);
                           }}
@@ -4162,7 +4415,7 @@ const Index = () => {
 
             {activeView === "zones" && (
               <div className="max-w-4xl mx-auto">
-                <AddZoneForm onSuccess={loadZones} />
+                {isCloudflareProvider && <AddZoneForm onSuccess={loadZones} />}
 
                 <Card className="shadow-card">
                   <CardHeader className="pb-3">
@@ -4178,7 +4431,7 @@ const Index = () => {
                       </div>
                     ) : zones.length === 0 ? (
                       <p className="text-center text-muted-foreground py-6 text-sm">
-                        未找到域名，请在 Cloudflare 中添加域名
+                        {getProviderEmptyZonesText(activeProviderId)}
                       </p>
                     ) : (
                       <div className="space-y-2">
@@ -4194,8 +4447,12 @@ const Index = () => {
                             <div className="w-10 flex-shrink-0"></div>
                             <div className="text-xs font-semibold text-muted-foreground ml-[120px]">区域ID</div>
                             <div className="flex-1"></div>
-                            <div className="text-xs font-semibold text-muted-foreground pr-[8px]">计划</div>
-                            <div className="w-[52px] ml-10"></div>
+                            {isCloudflareProvider && (
+                              <>
+                                <div className="text-xs font-semibold text-muted-foreground pr-[8px]">计划</div>
+                                <div className="w-[52px] ml-10"></div>
+                              </>
+                            )}
                           </div>
                         </div>
 
@@ -4283,30 +4540,34 @@ const Index = () => {
                                   {/* 占位 */}
                                   <div className="flex-1"></div>
 
-                                  {/* 付费状态 */}
-                                  <span className="px-2 py-0.5 bg-blue-500/10 text-blue-500 rounded text-xs whitespace-nowrap mr-[20px]">
-                                    Free
-                                  </span>
+                                  {isCloudflareProvider && (
+                                    <>
+                                      {/* 付费状态 */}
+                                      <span className="px-2 py-0.5 bg-blue-500/10 text-blue-500 rounded text-xs whitespace-nowrap mr-[20px]">
+                                        Free
+                                      </span>
 
-                                  {/* 操作按钮 */}
-                                  <div className="flex items-center gap-2 ml-10">
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (window.confirm(`确定要删除域名 ${zone.name} 吗？此操作无法撤销。`)) {
-                                          deleteZone(zone.id, zone.name);
-                                        }
-                                      }}
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </Button>
-                                  </div>
+                                      {/* 操作按钮 */}
+                                      <div className="flex items-center gap-2 ml-10">
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (window.confirm(`确定要删除域名 ${zone.name} 吗？此操作无法撤销。`)) {
+                                              deleteZone(zone.id, zone.name);
+                                            }
+                                          }}
+                                        >
+                                          <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                      </div>
+                                    </>
+                                  )}
                                 </div>
                               </div>
-                              {zone.status === "pending" && zone.name_servers && (
+                              {isCloudflareProvider && zone.status === "pending" && zone.name_servers && (
                                 <div className="px-2.5 pb-2.5 pt-2 bg-muted/30 border-t border-border/30">
                                   <div className="flex flex-wrap items-center gap-1.5">
                                     <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -4402,13 +4663,15 @@ const Index = () => {
                   </CardHeader>
                 </Card>
 
-                <AddDNSRecordForm
-                  key={`${selectedZone}-${dnsNavClicks}`}
-                  zoneId={selectedZone}
-                  onSuccess={() => loadDNSRecords(selectedZone)}
-                  cfEmail={cfEmail}
-                  cfApiKey={cfApiKey}
-                />
+                {isCloudflareProvider && (
+                  <AddDNSRecordForm
+                    key={`${selectedZone}-${dnsNavClicks}`}
+                    zoneId={selectedZone}
+                    onSuccess={() => loadDNSRecords(selectedZone)}
+                    cfEmail={cfEmail}
+                    cfApiKey={cfApiKey}
+                  />
+                )}
 
                 <Card className="shadow-card">
                   <CardHeader>
@@ -4433,9 +4696,11 @@ const Index = () => {
                           <span className="text-xs font-semibold text-muted-foreground flex-shrink-0 w-[28px] text-left transform -translate-x-2">
                             代理状态
                           </span>
-                          <div className="flex gap-2 flex-shrink-0" style={{ width: "104px" }}>
-                            {/* 占位符，与按钮宽度对齐 */}
-                          </div>
+                          {isCloudflareProvider && (
+                            <div className="flex gap-2 flex-shrink-0" style={{ width: "104px" }}>
+                              {/* 占位符，与按钮宽度对齐 */}
+                            </div>
+                          )}
                         </div>
 
                         {/* 显示DNS记录 */}
@@ -4548,18 +4813,20 @@ const Index = () => {
                               >
                                 {record.proxied ? "🟡" : "⚪"}
                               </span>
-                              <div className="flex gap-2 flex-shrink-0">
-                                <Button size="sm" variant="outline" onClick={() => setEditingRecord(record)}>
-                                  <Edit className="w-4 h-4" />
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="destructive"
-                                  onClick={() => deleteDNSRecord(selectedZone, record.id)}
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
-                              </div>
+                              {isCloudflareProvider && (
+                                <div className="flex gap-2 flex-shrink-0">
+                                  <Button size="sm" variant="outline" onClick={() => setEditingRecord(record)}>
+                                    <Edit className="w-4 h-4" />
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => deleteDNSRecord(selectedZone, record.id)}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -4673,7 +4940,7 @@ const Index = () => {
                   </CardContent>
                 </Card>
 
-                {editingRecord && (
+                {isCloudflareProvider && editingRecord && (
                   <EditDNSRecordForm
                     record={editingRecord}
                     zoneId={selectedZone}
@@ -4687,51 +4954,71 @@ const Index = () => {
               </div>
             )}
 
-            {activeView === "workers" && (
-              <WorkersView
-                scripts={workers.map(toWorkersViewItem)}
-                isLoading={isLoading}
-                onRefresh={loadWorkers}
-                onCreate={() => setCreateWorkerOpen(true)}
-                onEdit={(workerId) => {
-                  setEditingWorker({ id: workerId, name: workerId });
-                  setEditWorkerOpen(true);
-                  if (zones.length > 0 && zones[0]?.account?.id) {
-                    loadWorkerBindings(workerId, zones[0].account.id);
-                  }
-                }}
-                onDelete={(workerId) => deleteWorker(workerId, workerId)}
-                workerSubdomain={workerSubdomain}
-                bindingsByWorkerId={allWorkerBindings}
-                analyticsPanel={
-                  zones.length > 0 && zones[0]?.account?.id ? (
-                    <WorkerAnalyticsPanel accountId={zones[0].account.id} email={cfEmail} apiKey={cfApiKey} />
-                  ) : null
-                }
-                onCopyUrl={(url, type) => {
-                  navigator.clipboard.writeText(url);
-                  toast({
-                    description: type === "workersDev" ? "链接已复制到剪贴板" : "自定义域名已复制",
-                  });
-                }}
-                onBindD1={(workerId) => {
-                  setWorkerForD1Binding({ id: workerId, name: workerId });
-                  setBindD1Open(true);
-                }}
-                onBindR2={(workerId) => {
-                  setWorkerForR2Binding({ id: workerId, name: workerId });
-                  setBindR2Open(true);
-                }}
-                onBindKV={(workerId) => {
-                  setWorkerForKVBinding({ id: workerId, name: workerId });
-                  setBindKVOpen(true);
-                }}
-                onManageVariables={(workerId) => {
-                  setWorkerForVariables({ id: workerId, name: workerId });
-                  setManageVariablesOpen(true);
-                }}
-              />
-            )}
+	            {activeView === "workers" && (
+	              <WorkersView
+	                scripts={workers.map(toWorkersViewItem)}
+	                isLoading={isLoading}
+	                onRefresh={loadWorkers}
+	                onCreate={isCloudflareProvider ? () => setCreateWorkerOpen(true) : undefined}
+	                onEdit={
+	                  isCloudflareProvider
+	                    ? (workerId) => {
+	                        setEditingWorker({ id: workerId, name: workerId });
+	                        setEditWorkerOpen(true);
+	                        if (zones.length > 0 && zones[0]?.account?.id) {
+	                          loadWorkerBindings(workerId, zones[0].account.id);
+	                        }
+	                      }
+	                    : undefined
+	                }
+	                onDelete={isCloudflareProvider ? (workerId) => deleteWorker(workerId, workerId) : undefined}
+	                workerSubdomain={workerSubdomain}
+	                bindingsByWorkerId={allWorkerBindings}
+	                analyticsPanel={
+	                  isCloudflareProvider && zones.length > 0 && zones[0]?.account?.id ? (
+	                    <WorkerAnalyticsPanel accountId={zones[0].account.id} email={cfEmail} apiKey={cfApiKey} />
+	                  ) : null
+	                }
+	                onCopyUrl={(url, type) => {
+	                  navigator.clipboard.writeText(url);
+	                  toast({
+	                    description: type === "workersDev" ? "链接已复制到剪贴板" : "自定义域名已复制",
+	                  });
+	                }}
+	                onBindD1={
+	                  isCloudflareProvider
+	                    ? (workerId) => {
+	                        setWorkerForD1Binding({ id: workerId, name: workerId });
+	                        setBindD1Open(true);
+	                      }
+	                    : undefined
+	                }
+	                onBindR2={
+	                  isCloudflareProvider
+	                    ? (workerId) => {
+	                        setWorkerForR2Binding({ id: workerId, name: workerId });
+	                        setBindR2Open(true);
+	                      }
+	                    : undefined
+	                }
+	                onBindKV={
+	                  isCloudflareProvider
+	                    ? (workerId) => {
+	                        setWorkerForKVBinding({ id: workerId, name: workerId });
+	                        setBindKVOpen(true);
+	                      }
+	                    : undefined
+	                }
+	                onManageVariables={
+	                  isCloudflareProvider
+	                    ? (workerId) => {
+	                        setWorkerForVariables({ id: workerId, name: workerId });
+	                        setManageVariablesOpen(true);
+	                      }
+	                    : undefined
+	                }
+	              />
+	            )}
 
             {activeView === "worker-detail" && selectedWorker && (
               <div className="max-w-6xl mx-auto">
@@ -6489,7 +6776,7 @@ const Index = () => {
       </AlertDialog>
 
       {/* 编辑 Worker 对话框 */}
-      {editingWorker && zones.length > 0 && zones[0]?.account?.id && (
+      {isCloudflareProvider && editingWorker && zones.length > 0 && zones[0]?.account?.id && (
         <EditWorkerForm
           open={editWorkerOpen}
           onOpenChange={setEditWorkerOpen}
@@ -6510,7 +6797,7 @@ const Index = () => {
       )}
 
       {/* 新建 Worker 对话框 */}
-      {zones.length > 0 && zones[0]?.account?.id && (
+      {isCloudflareProvider && zones.length > 0 && zones[0]?.account?.id && (
         <CreateWorkerForm
           open={createWorkerOpen}
           onOpenChange={setCreateWorkerOpen}
@@ -6524,7 +6811,7 @@ const Index = () => {
       )}
 
       {/* 绑定 D1 数据库对话框 */}
-      {workerForD1Binding && zones.length > 0 && zones[0]?.account?.id && (
+      {isCloudflareProvider && workerForD1Binding && zones.length > 0 && zones[0]?.account?.id && (
         <BindD1DatabaseForm
           open={bindD1Open}
           onOpenChange={setBindD1Open}
@@ -6545,7 +6832,7 @@ const Index = () => {
       )}
 
       {/* 绑定 R2 存储桶对话框 */}
-      {workerForR2Binding && zones.length > 0 && zones[0]?.account?.id && (
+      {isCloudflareProvider && workerForR2Binding && zones.length > 0 && zones[0]?.account?.id && (
         <BindR2BucketForm
           open={bindR2Open}
           onOpenChange={setBindR2Open}
@@ -6565,7 +6852,7 @@ const Index = () => {
       )}
 
       {/* 绑定 KV 命名空间对话框 */}
-      {workerForKVBinding && zones.length > 0 && zones[0]?.account?.id && (
+      {isCloudflareProvider && workerForKVBinding && zones.length > 0 && zones[0]?.account?.id && (
         <BindKVNamespaceForm
           open={bindKVOpen}
           onOpenChange={setBindKVOpen}
@@ -6585,7 +6872,7 @@ const Index = () => {
       )}
 
       {/* 创建 D1 数据库对话框 */}
-      {zones.length > 0 && zones[0]?.account?.id && (
+      {isCloudflareProvider && zones.length > 0 && zones[0]?.account?.id && (
         <CreateD1DatabaseForm
           open={showCreateD1DatabaseForm}
           onOpenChange={setShowCreateD1DatabaseForm}
@@ -6599,7 +6886,7 @@ const Index = () => {
       )}
 
       {/* 管理 Worker 变量对话框 */}
-      {workerForVariables && zones.length > 0 && zones[0]?.account?.id && (
+      {isCloudflareProvider && workerForVariables && zones.length > 0 && zones[0]?.account?.id && (
         <ManageWorkerVariablesForm
           open={manageVariablesOpen}
           onOpenChange={setManageVariablesOpen}
@@ -6615,7 +6902,7 @@ const Index = () => {
       )}
 
       {/* Tunnel 管理对话框 */}
-      {zones.length > 0 && zones[0].account && (
+      {isCloudflareProvider && zones.length > 0 && zones[0].account && (
         <>
           <CreateTunnelForm
             open={createTunnelOpen}

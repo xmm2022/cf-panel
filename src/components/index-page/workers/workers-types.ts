@@ -26,9 +26,9 @@ export interface WorkersViewProps {
   scripts: WorkerListItem[];
   isLoading: boolean;
   onRefresh: () => void;
-  onCreate: () => void;
-  onEdit: (scriptId: string) => void;
-  onDelete: (scriptId: string) => void;
+  onCreate?: () => void;
+  onEdit?: (scriptId: string) => void;
+  onDelete?: (scriptId: string) => void;
   workerSubdomain?: string;
   bindingsByWorkerId?: Record<string, WorkerBindingSummary[]>;
   analyticsPanel?: ReactNode;
