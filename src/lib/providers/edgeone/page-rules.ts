@@ -1,26 +1,49 @@
 import type { PageRulesCapability } from "../capabilities/page-rules";
+import { ProviderError } from "../errors";
 import type { PageRule } from "../types";
 import { callEdgeOne } from "./_invoke";
 
+interface RawRuleCondition {
+  Target?: string;
+  Operator?: string;
+  Values?: string[];
+  [key: string]: unknown;
+}
+
+interface RawRuleConditionGroup {
+  Conditions?: RawRuleCondition[];
+}
+
+interface RawRuleContent {
+  Conditions?: RawRuleConditionGroup[];
+  Actions?: unknown[];
+}
+
 interface RawRule {
-  RuleId: string;
-  Status: "active" | "disabled";
-  Conditions: unknown;
-  Actions: unknown;
+  RuleId?: string;
+  RuleName?: string;
+  Status?: "enable" | "disable" | "active" | "disabled";
+  Rules?: RawRuleContent[];
+  RulePriority?: number;
 }
 
 interface DescribeRulesResponse {
-  Rules: RawRule[];
-  TotalCount: number;
+  RuleItems?: RawRule[];
+  Rules?: RawRule[];
 }
 
 function normalize(zoneId: string, raw: RawRule): PageRule {
+  const firstRule = raw.Rules?.[0];
+  const rawTargets = firstRule?.Conditions?.flatMap((group) => group.Conditions ?? []) ?? [];
+  const rawActions = firstRule?.Actions ?? [];
+
   return {
-    id: raw.RuleId,
+    id: raw.RuleId ?? "",
     zoneId,
-    status: raw.Status,
-    rawTargets: raw.Conditions,
-    rawActions: raw.Actions,
+    status: raw.Status === "enable" || raw.Status === "active" ? "active" : "disabled",
+    priority: raw.RulePriority,
+    rawTargets,
+    rawActions,
   };
 }
 
@@ -28,40 +51,28 @@ export const edgeonePageRules: PageRulesCapability = {
   async list(creds, zoneId) {
     const result = await callEdgeOne<DescribeRulesResponse>("DescribeRules", creds, {
       ZoneId: zoneId,
-      Limit: 1000,
     });
-    return result.Rules.map((raw) => normalize(zoneId, raw));
+    return (result.RuleItems ?? result.Rules ?? []).map((raw) => normalize(zoneId, raw));
   },
 
-  async create(creds, zoneId, rule) {
-    const created = await callEdgeOne<{ RuleId: string }>("CreateRule", creds, {
-      ZoneId: zoneId,
-      Status: rule.status,
-      Conditions: rule.rawTargets,
-      Actions: rule.rawActions,
-    });
-    return {
-      id: created.RuleId,
-      zoneId,
-      status: rule.status,
-      rawTargets: rule.rawTargets,
-      rawActions: rule.rawActions,
-    };
+  async create() {
+    throw new ProviderError(
+      "edgeone",
+      "UNKNOWN",
+      "EdgeOne rule engine create is not mapped to Cloudflare Page Rules",
+    );
   },
 
-  async update(creds, zoneId, rule) {
-    await callEdgeOne<unknown>("ModifyRule", creds, {
-      ZoneId: zoneId,
-      RuleId: rule.id,
-      Status: rule.status,
-      Conditions: rule.rawTargets,
-      Actions: rule.rawActions,
-    });
-    return rule;
+  async update() {
+    throw new ProviderError(
+      "edgeone",
+      "UNKNOWN",
+      "EdgeOne rule engine update is not mapped to Cloudflare Page Rules",
+    );
   },
 
   async delete(creds, zoneId, ruleId) {
-    await callEdgeOne<unknown>("DeleteRule", creds, {
+    await callEdgeOne<unknown>("DeleteRules", creds, {
       ZoneId: zoneId,
       RuleIds: [ruleId],
     });

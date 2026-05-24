@@ -35,9 +35,9 @@ export function KvStorageView({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Key className="w-5 h-5" />
-            Workers KV 管理
+            KV 存储管理
           </CardTitle>
-          <CardDescription>管理 Workers KV 命名空间和键值对</CardDescription>
+          <CardDescription>管理 KV 命名空间和键值对</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-6">

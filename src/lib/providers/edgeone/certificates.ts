@@ -4,32 +4,37 @@ import { callEdgeOne } from "./_invoke";
 
 interface RawCertificate {
   CertId: string;
-  Hosts?: string[];
-  ExpiresOn: string;
-  Status: string;
+  CommonName?: string;
+  SubjectAltName?: string[];
+  ExpireTime?: string;
+  Status?: string;
 }
 
-interface DescribeHostsCertificateResponse {
-  Certificates: RawCertificate[];
-  TotalCount: number;
+interface DescribeDefaultCertificatesResponse {
+  DefaultServerCertInfo?: RawCertificate[];
+  TotalCount?: number;
 }
 
 function normalizeCertificate(raw: RawCertificate): Certificate {
+  const hosts = [raw.CommonName, ...(raw.SubjectAltName ?? [])].filter(
+    (host): host is string => Boolean(host),
+  );
+
   return {
     id: raw.CertId,
-    hosts: raw.Hosts ?? [],
-    expiresOn: raw.ExpiresOn,
-    status: raw.Status,
+    hosts: [...new Set(hosts)],
+    expiresOn: raw.ExpireTime ?? "",
+    status: raw.Status ?? "",
   };
 }
 
 export const edgeoneCertificates: CertificatesCapability = {
   async list(creds, zoneId) {
-    const result = await callEdgeOne<DescribeHostsCertificateResponse>(
-      "DescribeHostsCertificate",
+    const result = await callEdgeOne<DescribeDefaultCertificatesResponse>(
+      "DescribeDefaultCertificates",
       creds,
-      { ZoneId: zoneId, Limit: 1000 },
+      { ZoneId: zoneId, Offset: 0, Limit: 100 },
     );
-    return result.Certificates.map(normalizeCertificate);
+    return (result.DefaultServerCertInfo ?? []).map(normalizeCertificate);
   },
 };

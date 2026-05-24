@@ -39,12 +39,25 @@ export interface SidebarItem {
   scope: CapabilitySidebarScope;
 }
 
-const MENU: SidebarItem[] = [
+type SidebarItemDefinition = SidebarItem & {
+  labels?: Partial<Record<ProviderId, string>>;
+  scopes?: Partial<Record<ProviderId, CapabilitySidebarScope>>;
+};
+
+const MENU: SidebarItemDefinition[] = [
   { key: "zones", label: "域名管理", capability: "zones", view: "zones", scope: "global" },
   { key: "dns", label: "DNS 记录", capability: "dns", view: "dns", scope: "zone" },
   { key: "page-rules", label: "页面规则", capability: "pageRules", view: "page-rules", scope: "zone" },
   { key: "workers", label: "Workers", capability: "workers", view: "workers", scope: "global" },
-  { key: "kv", label: "Workers KV", capability: "kv", view: "kv-storage", scope: "global" },
+  {
+    key: "kv",
+    label: "Workers KV",
+    labels: { edgeone: "EdgeOne KV" },
+    scopes: { edgeone: "zone" },
+    capability: "kv",
+    view: "kv-storage",
+    scope: "global",
+  },
   { key: "certificates", label: "证书管理", capability: "certificates", view: "certificates", scope: "zone" },
   { key: "analytics", label: "统计分析", capability: "analytics", view: "analytics", scope: "zone" },
   { key: "pages", label: "Pages", capability: "pages", view: "pages", scope: "global" },
@@ -58,5 +71,11 @@ export function buildSidebarItems(
   providerRegistry: Record<ProviderId, CloudProvider>,
 ): SidebarItem[] {
   const capabilities = providerRegistry[active].capabilities;
-  return MENU.filter((item) => capabilities[item.capability] !== undefined);
+  return MENU.filter((item) => capabilities[item.capability] !== undefined).map(
+    ({ labels, scopes, ...item }) => ({
+      ...item,
+      label: labels?.[active] ?? item.label,
+      scope: scopes?.[active] ?? item.scope,
+    }),
+  );
 }

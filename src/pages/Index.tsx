@@ -668,6 +668,7 @@ const Index = () => {
 
   const provider = providers[activeProviderId];
   const isCloudflareProvider = activeProviderId === "cloudflare";
+  const isEdgeOneProvider = activeProviderId === "edgeone";
   const credentialCopy = getCredentialCopy(activeProviderId);
   const activeProviderAccounts = savedAccounts.filter(
     (account) => account.provider === activeProviderId,
@@ -1314,18 +1315,55 @@ const Index = () => {
     const credentials = getActiveCredentials();
     const kvCapability = provider.capabilities.kv;
     if (!credentials || !kvCapability) return;
+    if (isEdgeOneProvider && !selectedZone) {
+      setKvNamespaces([]);
+      setSelectedKvNamespace("");
+      setKvKeys([]);
+      return;
+    }
 
     setIsLoading(true);
     try {
-      const namespaces = await kvCapability.listNamespaces(credentials);
+      const namespaces = await kvCapability.listNamespaces(
+        credentials,
+        isEdgeOneProvider ? { zoneId: selectedZone } : undefined,
+      );
       setKvNamespaces(namespaces);
+      return namespaces;
     } catch (error) {
       console.error("Load KV namespaces error:", error);
       handleProviderLoadError(error, "加载 KV 命名空间失败");
+      return undefined;
     } finally {
       setIsLoading(false);
     }
-  }, [getActiveCredentials, handleProviderLoadError, provider.capabilities.kv]);
+  }, [
+    getActiveCredentials,
+    handleProviderLoadError,
+    isEdgeOneProvider,
+    provider.capabilities.kv,
+    selectedZone,
+  ]);
+
+  const getEdgeOneKvContext = () => {
+    const credentials = getActiveCredentials();
+    const kvCapability = provider.capabilities.kv;
+    if (!credentials || !kvCapability) return null;
+    if (!selectedZone) {
+      toast({
+        title: "请先选择域名",
+        description: "EdgeOne KV 命名空间属于具体站点",
+        variant: "destructive",
+      });
+      return null;
+    }
+
+    return {
+      credentials,
+      kvCapability,
+      options: { zoneId: selectedZone },
+    };
+  };
 
   const handleCreateKvNamespace = async (namespaceName: string) => {
     if (!namespaceName) {
@@ -1333,6 +1371,39 @@ const Index = () => {
         title: "请输入命名空间名称",
         variant: "destructive",
       });
+      return;
+    }
+
+    if (isEdgeOneProvider) {
+      const credentials = getActiveCredentials();
+      const kvCapability = provider.capabilities.kv;
+      if (!credentials || !kvCapability?.createNamespace) return;
+      if (!selectedZone) {
+        toast({
+          title: "请先选择域名",
+          description: "EdgeOne KV 命名空间属于具体站点",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setIsLoading(true);
+      try {
+        await kvCapability.createNamespace(credentials, namespaceName, { zoneId: selectedZone });
+        toast({ title: "命名空间创建成功" });
+        const input = document.getElementById("kv-namespace-name") as HTMLInputElement | null;
+        if (input) input.value = "";
+        await loadKvNamespaces();
+      } catch (error) {
+        console.error("Create EdgeOne namespace error:", error);
+        toast({
+          title: "创建失败",
+          description: errorMessage(error),
+          variant: "destructive",
+        });
+      } finally {
+        setIsLoading(false);
+      }
       return;
     }
 
@@ -1401,6 +1472,57 @@ const Index = () => {
   };
 
   const handleRefreshKvNamespaces = async () => {
+    const namespaces = await loadKvNamespaces();
+    if (namespaces) {
+      toast({
+        title: `列表已刷新 (${namespaces.length} 个命名空间)`,
+      });
+    }
+  };
+
+  const handleDeleteKvNamespace = async (namespace: KVNamespaceSummary) => {
+    if (
+      !confirm(
+        `确定要删除命名空间 "${namespace.title}" 吗？此操作将删除该命名空间下的所有键值对，且无法恢复。`,
+      )
+    ) {
+      return;
+    }
+
+    if (isEdgeOneProvider) {
+      const credentials = getActiveCredentials();
+      const kvCapability = provider.capabilities.kv;
+      if (!credentials || !kvCapability?.deleteNamespace) return;
+      if (!selectedZone) {
+        toast({
+          title: "请先选择域名",
+          description: "EdgeOne KV 命名空间属于具体站点",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setIsLoading(true);
+      try {
+        await kvCapability.deleteNamespace(credentials, namespace.id, { zoneId: selectedZone });
+        toast({ title: "命名空间删除成功" });
+        setKvNamespaces(kvNamespaces.filter((n) => n.id !== namespace.id));
+        if (selectedKvNamespace === namespace.id) {
+          setSelectedKvNamespace("");
+          setKvKeys([]);
+        }
+      } catch (e) {
+        toast({
+          title: "删除失败",
+          description: errorMessage(e),
+          variant: "destructive",
+        });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     if (!email || !apiKey) {
@@ -1422,57 +1544,6 @@ const Index = () => {
       return;
     }
 
-    setIsLoading(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("cloudflare-api", {
-        body: {
-          action: "list_kv_namespaces",
-          email,
-          apiKey,
-          accountId,
-        },
-      });
-
-      if (error) throw error;
-
-      if (data.success) {
-        setKvNamespaces(data.result || []);
-        toast({
-          title: `列表已刷新 (${data.result?.length || 0} 个命名空间)`,
-        });
-      } else {
-        toast({
-          title: "加载失败",
-          description: data.errors?.[0]?.message || "未知错误",
-          variant: "destructive",
-        });
-      }
-    } catch (error) {
-      console.error("Load namespaces error:", error);
-      toast({
-        title: "加载失败",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleDeleteKvNamespace = async (namespace: KVNamespaceSummary) => {
-    if (
-      !confirm(
-        `确定要删除命名空间 "${namespace.title}" 吗？此操作将删除该命名空间下的所有键值对，且无法恢复。`,
-      )
-    ) {
-      return;
-    }
-    const email = getCookie("cf_email") || cfEmail;
-    const apiKey = getCookie("cf_api_key") || cfApiKey;
-    const accountId = zones[0]?.account?.id;
-    if (!email || !apiKey || !accountId) {
-      toast({ title: "缺少凭证或账户信息", variant: "destructive" });
-      return;
-    }
     setIsLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke("cloudflare-api", {
@@ -1525,6 +1596,31 @@ const Index = () => {
       toast({ title: "请输入键名", variant: "destructive" });
       return;
     }
+    if (isEdgeOneProvider) {
+      const context = getEdgeOneKvContext();
+      if (!context) return;
+
+      setIsLoading(true);
+      try {
+        await context.kvCapability.putValue(
+          context.credentials,
+          selectedKvNamespace,
+          key,
+          value,
+          context.options,
+        );
+        toast({ title: "保存成功" });
+        if (!kvKeys.find((item) => item.name === key)) {
+          setKvKeys([...kvKeys, { name: key }]);
+        }
+      } catch (e) {
+        toast({ title: "保存失败", description: errorMessage(e), variant: "destructive" });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     const accountId = zones[0]?.account?.id;
@@ -1576,6 +1672,28 @@ const Index = () => {
       toast({ title: "请输入键名", variant: "destructive" });
       return;
     }
+    if (isEdgeOneProvider) {
+      const context = getEdgeOneKvContext();
+      if (!context) return;
+
+      setIsLoading(true);
+      try {
+        const value = await context.kvCapability.getValue(
+          context.credentials,
+          selectedKvNamespace,
+          key,
+          context.options,
+        );
+        if (valInput) valInput.value = value;
+        toast({ title: "读取成功" });
+      } catch (e) {
+        toast({ title: "读取失败", description: errorMessage(e), variant: "destructive" });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     const accountId = zones[0]?.account?.id;
@@ -1620,6 +1738,29 @@ const Index = () => {
       toast({ title: "请输入键名", variant: "destructive" });
       return;
     }
+    if (isEdgeOneProvider) {
+      const context = getEdgeOneKvContext();
+      if (!context) return;
+
+      setIsLoading(true);
+      try {
+        await context.kvCapability.deleteKey(
+          context.credentials,
+          selectedKvNamespace,
+          key,
+          context.options,
+        );
+        toast({ title: "删除成功" });
+        setKvKeys(kvKeys.filter((item) => item.name !== key));
+        setSelectedKvKeys(selectedKvKeys.filter((name) => name !== key));
+      } catch (e) {
+        toast({ title: "删除失败", description: errorMessage(e), variant: "destructive" });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     const accountId = zones[0]?.account?.id;
@@ -1665,6 +1806,42 @@ const Index = () => {
     const keysToExport = selectedKvKeys.length
       ? selectedKvKeys
       : kvKeys.map((k) => k.name);
+    if (isEdgeOneProvider) {
+      const context = getEdgeOneKvContext();
+      if (!context) return;
+
+      setIsLoading(true);
+      try {
+        const entries: KvImportEntry[] = [];
+        for (const key of keysToExport) {
+          const value = await context.kvCapability.getValue(
+            context.credentials,
+            selectedKvNamespace,
+            key,
+            context.options,
+          );
+          entries.push({ key, value });
+        }
+        const blob = new Blob([JSON.stringify(entries, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = buildKvExportFileName(selectedKvNamespace);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast({ title: "导出完成", description: `共导出 ${entries.length} 个键` });
+      } catch (e) {
+        toast({ title: "导出失败", description: errorMessage(e), variant: "destructive" });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     const accountId = zones[0]?.account?.id;
@@ -1720,6 +1897,38 @@ const Index = () => {
       }
       return;
     }
+    if (isEdgeOneProvider) {
+      const context = getEdgeOneKvContext();
+      if (!context) return;
+
+      setIsLoading(true);
+      try {
+        let ok = 0;
+        for (const item of entries) {
+          await context.kvCapability.putValue(
+            context.credentials,
+            selectedKvNamespace,
+            item.key,
+            item.value,
+            context.options,
+          );
+          ok++;
+        }
+        toast({ title: "导入完成", description: `成功 ${ok} 个` });
+        const keys = await context.kvCapability.listKeys(
+          context.credentials,
+          selectedKvNamespace,
+          context.options,
+        );
+        setKvKeys(keys);
+      } catch (e) {
+        toast({ title: "导入失败", description: errorMessage(e), variant: "destructive" });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     const accountId = zones[0]?.account?.id;
@@ -1762,6 +1971,28 @@ const Index = () => {
       toast({ title: "请选择命名空间", variant: "destructive" });
       return;
     }
+    if (isEdgeOneProvider) {
+      const context = getEdgeOneKvContext();
+      if (!context) return;
+
+      setIsLoading(true);
+      try {
+        const keys = await context.kvCapability.listKeys(
+          context.credentials,
+          selectedKvNamespace,
+          context.options,
+        );
+        setKvKeys(keys);
+        setSelectedKvKeys([]);
+        toast({ title: "已加载键列表", description: `共 ${keys.length} 个` });
+      } catch (e) {
+        toast({ title: "加载失败", description: errorMessage(e), variant: "destructive" });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     const accountId = zones[0]?.account?.id;
@@ -1796,6 +2027,33 @@ const Index = () => {
 
   const handleDeleteSelectedKvKeys = async () => {
     if (!selectedKvNamespace || selectedKvKeys.length === 0) return;
+    if (isEdgeOneProvider) {
+      const context = getEdgeOneKvContext();
+      if (!context) return;
+
+      setIsLoading(true);
+      try {
+        let ok = 0;
+        for (const key of selectedKvKeys) {
+          await context.kvCapability.deleteKey(
+            context.credentials,
+            selectedKvNamespace,
+            key,
+            context.options,
+          );
+          ok++;
+        }
+        setKvKeys(kvKeys.filter((item) => !selectedKvKeys.includes(item.name)));
+        setSelectedKvKeys([]);
+        toast({ title: "批量删除完成", description: `成功 ${ok} 个` });
+      } catch (e) {
+        toast({ title: "批量删除失败", description: errorMessage(e), variant: "destructive" });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const email = getCookie("cf_email") || cfEmail;
     const apiKey = getCookie("cf_api_key") || cfApiKey;
     const accountId = zones[0]?.account?.id;
@@ -3765,8 +4023,12 @@ const Index = () => {
     }
   };
 
-  const renderCapabilitySidebarItem = (key: CapabilitySidebarKey) => {
+  const renderCapabilitySidebarItem = (
+    key: CapabilitySidebarKey,
+    expectedScope?: SidebarItem["scope"],
+  ) => {
     const item = sidebarItemByKey.get(key);
+    if (expectedScope && item?.scope !== expectedScope) return null;
     if (!item || (item.key === "workers" && !showWorkers)) return null;
 
     const Icon = CAPABILITY_ICON_BY_KEY[item.key];
@@ -4067,7 +4329,7 @@ const Index = () => {
               <SidebarGroupLabel>全局功能</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {renderCapabilitySidebarItem("zones")}
+                  {renderCapabilitySidebarItem("zones", "global")}
                   {isCloudflareProvider && (
                     <SidebarMenuItem>
                       <SidebarMenuButton onClick={() => setActiveView("deploy")} isActive={activeView === "deploy"}>
@@ -4102,11 +4364,11 @@ const Index = () => {
                       <span>操作历史</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                  {renderCapabilitySidebarItem("workers")}
-                  {renderCapabilitySidebarItem("pages")}
-                  {renderCapabilitySidebarItem("d1")}
-                  {renderCapabilitySidebarItem("r2")}
-                  {renderCapabilitySidebarItem("kv")}
+                  {renderCapabilitySidebarItem("workers", "global")}
+                  {renderCapabilitySidebarItem("pages", "global")}
+                  {renderCapabilitySidebarItem("d1", "global")}
+                  {renderCapabilitySidebarItem("r2", "global")}
+                  {renderCapabilitySidebarItem("kv", "global")}
                   {isCloudflareProvider && (
                     <SidebarMenuItem>
                       <SidebarMenuButton
@@ -4118,7 +4380,7 @@ const Index = () => {
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   )}
-                  {renderCapabilitySidebarItem("tunnels")}
+                  {renderCapabilitySidebarItem("tunnels", "global")}
                   <SidebarMenuItem>
                     <SidebarMenuButton onClick={() => setActiveView("feedback")} isActive={activeView === "feedback"}>
                       <MessageSquare className="w-4 h-4" />
@@ -4210,7 +4472,7 @@ const Index = () => {
                 </div>
                 <SidebarGroupContent>
                   <SidebarMenu>
-                    {renderCapabilitySidebarItem("dns")}
+                    {renderCapabilitySidebarItem("dns", "zone")}
                     {isCloudflareProvider && (
                       <SidebarMenuItem>
                         <SidebarMenuButton
@@ -4252,9 +4514,10 @@ const Index = () => {
                         </SidebarMenuButton>
                       </SidebarMenuItem>
                     )}
-                    {renderCapabilitySidebarItem("analytics")}
-                    {renderCapabilitySidebarItem("page-rules")}
-                    {renderCapabilitySidebarItem("certificates")}
+                    {renderCapabilitySidebarItem("analytics", "zone")}
+                    {renderCapabilitySidebarItem("page-rules", "zone")}
+                    {renderCapabilitySidebarItem("kv", "zone")}
+                    {renderCapabilitySidebarItem("certificates", "zone")}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
@@ -4279,7 +4542,7 @@ const Index = () => {
                   {activeView === "firewall" && "防火墙规则"}
                   {activeView === "analytics" && "分析统计"}
                   {activeView === "page-rules" && "页面规则"}
-                  {activeView === "kv-storage" && "Workers KV 管理"}
+                  {activeView === "kv-storage" && "KV 存储管理"}
                   {activeView === "certificates" && "证书管理"}
                   {activeView === "d1-database" && "D1 数据库管理"}
                   {activeView === "r2-storage" && "R2 存储桶管理"}

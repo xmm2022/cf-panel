@@ -6,17 +6,24 @@ import type {
 import { callEdgeOne } from "./_invoke";
 
 interface RawDetail {
-  Timestamp: number;
-  Value: number;
+  Timestamp?: number;
+  Value?: number;
 }
 
 interface RawSeries {
-  MetricName: string;
+  MetricName?: string;
   DetailData?: RawDetail[];
+  Detail?: RawDetail[];
+}
+
+interface RawTimingDataRecord {
+  TypeKey?: string;
+  TypeValue?: RawSeries[];
+  FloatTypeValue?: RawSeries[];
 }
 
 interface RawAnalyticsResponse {
-  Data?: RawSeries[];
+  Data?: RawTimingDataRecord[] | RawSeries[];
 }
 
 function periodToRange(period: AnalyticsPeriod): {
@@ -50,20 +57,18 @@ function normalizeAnalytics(data: RawSeries[] = []): AnalyticsPoint[] {
   const byTimestamp = new Map<number, AnalyticsPoint>();
 
   for (const series of data) {
-    for (const detail of series.DetailData ?? []) {
+    for (const detail of series.Detail ?? series.DetailData ?? []) {
+      if (detail.Timestamp === undefined || detail.Value === undefined) continue;
       const point = byTimestamp.get(detail.Timestamp) ?? emptyPoint(detail.Timestamp);
 
       switch (series.MetricName) {
         case "l7Flow_request":
           point.requests = detail.Value;
           break;
-        case "l7Flow_outFlow":
+        case "l7Flow_outFlux":
           point.bytes = detail.Value;
           break;
-        case "l7Flow_hit_request":
-          point.cachedRequests = detail.Value;
-          break;
-        case "l7Flow_hit_outFlow":
+        case "l7Flow_hit_outFlux":
           point.cachedBytes = detail.Value;
           break;
       }
@@ -77,6 +82,13 @@ function normalizeAnalytics(data: RawSeries[] = []): AnalyticsPoint[] {
     .map(([, point]) => point);
 }
 
+function flattenSeries(data: RawAnalyticsResponse["Data"] = []): RawSeries[] {
+  return data.flatMap((record) => {
+    if ("MetricName" in record) return [record];
+    return [...(record.TypeValue ?? []), ...(record.FloatTypeValue ?? [])];
+  });
+}
+
 export const edgeoneAnalytics: AnalyticsCapability = {
   async fetch(creds, zoneId, period) {
     const result = await callEdgeOne<RawAnalyticsResponse>(
@@ -84,16 +96,11 @@ export const edgeoneAnalytics: AnalyticsCapability = {
       creds,
       {
         ZoneIds: [zoneId],
-        MetricNames: [
-          "l7Flow_request",
-          "l7Flow_outFlow",
-          "l7Flow_hit_request",
-          "l7Flow_hit_outFlow",
-        ],
+        MetricNames: ["l7Flow_request", "l7Flow_outFlux", "l7Flow_hit_outFlux"],
         ...periodToRange(period),
       },
     );
 
-    return normalizeAnalytics(result.Data);
+    return normalizeAnalytics(flattenSeries(result.Data));
   },
 };

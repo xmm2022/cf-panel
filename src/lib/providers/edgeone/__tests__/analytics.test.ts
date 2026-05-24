@@ -20,17 +20,29 @@ describe("edgeoneAnalytics", () => {
           Response: {
             Data: [
               {
-                MetricName: "l7Flow_request",
-                DetailData: [
-                  { Timestamp: 1716163200, Value: 100 },
-                  { Timestamp: 1716249600, Value: 200 },
-                ],
-              },
-              {
-                MetricName: "l7Flow_outFlow",
-                DetailData: [
-                  { Timestamp: 1716163200, Value: 1024 },
-                  { Timestamp: 1716249600, Value: 2048 },
+                TypeKey: "appid",
+                TypeValue: [
+                  {
+                    MetricName: "l7Flow_request",
+                    Detail: [
+                      { Timestamp: 1716163200, Value: 100 },
+                      { Timestamp: 1716249600, Value: 200 },
+                    ],
+                  },
+                  {
+                    MetricName: "l7Flow_outFlux",
+                    Detail: [
+                      { Timestamp: 1716163200, Value: 1024 },
+                      { Timestamp: 1716249600, Value: 2048 },
+                    ],
+                  },
+                  {
+                    MetricName: "l7Flow_hit_outFlux",
+                    Detail: [
+                      { Timestamp: 1716163200, Value: 512 },
+                      { Timestamp: 1716249600, Value: 1024 },
+                    ],
+                  },
                 ],
               },
             ],
@@ -58,7 +70,7 @@ describe("edgeoneAnalytics", () => {
         bytes: 1024,
         threats: 0,
         cachedRequests: 0,
-        cachedBytes: 0,
+        cachedBytes: 512,
       },
       {
         date: "2024-05-21",
@@ -66,8 +78,15 @@ describe("edgeoneAnalytics", () => {
         bytes: 2048,
         threats: 0,
         cachedRequests: 0,
-        cachedBytes: 0,
+        cachedBytes: 1024,
       },
     ]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      action: "DescribeTimingL7AnalysisData",
+      payload: {
+        ZoneIds: ["zone-1"],
+        MetricNames: ["l7Flow_request", "l7Flow_outFlux", "l7Flow_hit_outFlux"],
+      },
+    });
   });
 });

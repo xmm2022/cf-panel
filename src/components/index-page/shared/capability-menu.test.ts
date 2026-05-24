@@ -26,5 +26,10 @@ describe("buildSidebarItems", () => {
 
     expect(items.some((item) => item.key === "pages")).toBe(false);
     expect(items.some((item) => item.key === "r2")).toBe(false);
+    expect(items.some((item) => item.key === "page-rules")).toBe(false);
+    expect(items.find((item) => item.key === "kv")).toMatchObject({
+      label: "EdgeOne KV",
+      scope: "zone",
+    });
   });
 });

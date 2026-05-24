@@ -65,13 +65,17 @@ export const edgeoneDns: DnsCapability = {
     zoneId: string,
     record: DnsRecord,
   ) {
-    await callEdgeOne<unknown>("ModifyDnsRecord", creds, {
+    await callEdgeOne<unknown>("ModifyDnsRecords", creds, {
       ZoneId: zoneId,
-      RecordId: record.id,
-      Name: record.name,
-      Type: record.type,
-      Content: record.content,
-      TTL: record.ttl,
+      DnsRecords: [
+        {
+          RecordId: record.id,
+          Name: record.name,
+          Type: record.type,
+          Content: record.content,
+          TTL: record.ttl,
+        },
+      ],
     });
     return record;
   },
@@ -81,9 +85,9 @@ export const edgeoneDns: DnsCapability = {
     zoneId: string,
     recordId: string,
   ) {
-    await callEdgeOne<unknown>("DeleteDnsRecord", creds, {
+    await callEdgeOne<unknown>("DeleteDnsRecords", creds, {
       ZoneId: zoneId,
-      RecordId: recordId,
+      RecordIds: [recordId],
     });
   },
 };

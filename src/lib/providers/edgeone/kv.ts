@@ -1,36 +1,86 @@
 import type { KvCapability } from "../capabilities/kv";
+import { ProviderError } from "../errors";
 import type { KvKey, KvNamespace, ProviderCredentials } from "../types";
 import { callEdgeOne } from "./_invoke";
 
 interface RawNamespace {
-  NamespaceId: string;
-  NamespaceName: string;
+  Namespace?: string;
+  Remark?: string;
 }
 
-interface RawKey {
-  KeyName: string;
+interface DescribeEdgeKVNamespacesResponse {
+  KVNamespaces?: RawNamespace[];
+  TotalCount?: number;
+}
+
+interface EdgeKVListResponse {
+  Keys?: string[];
+  Cursor?: string;
+}
+
+interface EdgeKVGetResponse {
+  Data?: Array<{
+    Key?: string;
+    Value?: string;
+  }>;
+}
+
+function requireZoneId(zoneId: string | undefined): string {
+  if (!zoneId) {
+    throw new ProviderError(
+      "edgeone",
+      "NOT_FOUND",
+      "EdgeOne KV requires a selected zone",
+    );
+  }
+
+  return zoneId;
+}
+
+function normalizeNamespace(raw: RawNamespace): KvNamespace {
+  const namespace = raw.Namespace ?? "";
+  return {
+    id: namespace,
+    title: namespace,
+  };
 }
 
 export const edgeoneKv: KvCapability = {
-  async listNamespaces(creds: ProviderCredentials) {
-    const result = await callEdgeOne<{ KvNamespaces: RawNamespace[] }>(
-      "DescribeKvNamespaces",
+  async listNamespaces(creds: ProviderCredentials, options) {
+    const zoneId = requireZoneId(options?.zoneId);
+    const result = await callEdgeOne<DescribeEdgeKVNamespacesResponse>(
+      "DescribeEdgeKVNamespaces",
       creds,
-      { Limit: 1000 },
+      { ZoneId: zoneId, Offset: 0, Limit: 1000 },
     );
-    return result.KvNamespaces.map<KvNamespace>((namespace) => ({
-      id: namespace.NamespaceId,
-      title: namespace.NamespaceName,
-    }));
+    return (result.KVNamespaces ?? []).map(normalizeNamespace);
   },
 
-  async listKeys(creds: ProviderCredentials, namespaceId: string) {
-    const result = await callEdgeOne<{ Keys: RawKey[] }>(
-      "DescribeKvKeys",
+  async createNamespace(creds: ProviderCredentials, name: string, options) {
+    const zoneId = requireZoneId(options?.zoneId);
+    await callEdgeOne<unknown>("CreateEdgeKVNamespace", creds, {
+      ZoneId: zoneId,
+      Namespace: name,
+    });
+    return { id: name, title: name };
+  },
+
+  async deleteNamespace(creds: ProviderCredentials, namespaceId: string, options) {
+    const zoneId = requireZoneId(options?.zoneId);
+    await callEdgeOne<unknown>("DeleteEdgeKVNamespace", creds, {
+      ZoneId: zoneId,
+      Namespace: namespaceId,
+    });
+  },
+
+  async listKeys(creds: ProviderCredentials, namespaceId: string, options) {
+    const zoneId = requireZoneId(options?.zoneId);
+    const result = await callEdgeOne<EdgeKVListResponse>(
+      "EdgeKVList",
       creds,
-      { NamespaceId: namespaceId, Limit: 1000 },
+      { ZoneId: zoneId, Namespace: namespaceId, Limit: 1000 },
     );
-    return result.Keys.map<KvKey>((key) => ({ name: key.KeyName }));
+    return (result.Keys ?? []).map<KvKey>((key) => ({ name: key }));
   },
 
   async putValue(
@@ -38,26 +88,33 @@ export const edgeoneKv: KvCapability = {
     namespaceId: string,
     key: string,
     value: string,
+    options,
   ) {
-    await callEdgeOne<unknown>("WriteKvValue", creds, {
-      NamespaceId: namespaceId,
-      KeyName: key,
+    const zoneId = requireZoneId(options?.zoneId);
+    await callEdgeOne<unknown>("EdgeKVPut", creds, {
+      ZoneId: zoneId,
+      Namespace: namespaceId,
+      Key: key,
       Value: value,
     });
   },
 
-  async getValue(creds: ProviderCredentials, namespaceId: string, key: string) {
-    const result = await callEdgeOne<{ Value: string }>("ReadKvValue", creds, {
-      NamespaceId: namespaceId,
-      KeyName: key,
+  async getValue(creds: ProviderCredentials, namespaceId: string, key: string, options) {
+    const zoneId = requireZoneId(options?.zoneId);
+    const result = await callEdgeOne<EdgeKVGetResponse>("EdgeKVGet", creds, {
+      ZoneId: zoneId,
+      Namespace: namespaceId,
+      Keys: [key],
     });
-    return result.Value;
+    return result.Data?.[0]?.Value ?? "";
   },
 
-  async deleteKey(creds: ProviderCredentials, namespaceId: string, key: string) {
-    await callEdgeOne<unknown>("DeleteKvKey", creds, {
-      NamespaceId: namespaceId,
-      KeyName: key,
+  async deleteKey(creds: ProviderCredentials, namespaceId: string, key: string, options) {
+    const zoneId = requireZoneId(options?.zoneId);
+    await callEdgeOne<unknown>("EdgeKVDelete", creds, {
+      ZoneId: zoneId,
+      Namespace: namespaceId,
+      Keys: [key],
     });
   },
 };

@@ -35,8 +35,8 @@ const baseProps: KvStorageViewProps = {
 describe("KvStorageView", () => {
   it("renders the section title and description", () => {
     render(<KvStorageView {...baseProps} />);
-    expect(screen.getByText("Workers KV 管理")).toBeInTheDocument();
-    expect(screen.getByText("管理 Workers KV 命名空间和键值对")).toBeInTheDocument();
+    expect(screen.getByText("KV 存储管理")).toBeInTheDocument();
+    expect(screen.getByText("管理 KV 命名空间和键值对")).toBeInTheDocument();
   });
 
   it("shows the empty namespace placeholder when list is empty", () => {

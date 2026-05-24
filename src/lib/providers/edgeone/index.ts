@@ -3,7 +3,6 @@ import { edgeoneAnalytics } from "./analytics";
 import { edgeoneCertificates } from "./certificates";
 import { edgeoneDns } from "./dns";
 import { edgeoneKv } from "./kv";
-import { edgeonePageRules } from "./page-rules";
 import { edgeoneWorkers } from "./workers";
 import { edgeoneZones } from "./zones";
 
@@ -15,7 +14,6 @@ export const edgeoneProvider: CloudProvider = {
     dns: edgeoneDns,
     analytics: edgeoneAnalytics,
     kv: edgeoneKv,
-    pageRules: edgeonePageRules,
     workers: edgeoneWorkers,
     certificates: edgeoneCertificates,
   },
